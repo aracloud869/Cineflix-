@@ -1,15 +1,21 @@
-import { doc, getDoc, setDoc, updateDoc, arrayUnion, collection, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, arrayUnion, collection, addDoc, query, where, orderBy, getDocs, serverTimestamp } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Comment } from '../types';
 
 export const saveSubtitle = async (movieId: string, name: string, fileUrl: string, userId: string) => {
-  await addDoc(collection(db, 'subtitles'), {
-    movieId,
-    name,
-    fileUrl,
-    addedBy: userId,
-    addedAt: new Date()
-  });
+  try {
+    await addDoc(collection(db, 'subtitles'), {
+      movieId,
+      name,
+      fileUrl,
+      addedBy: userId,
+      addedAt: serverTimestamp()
+    });
+    return { success: true };
+  } catch (error: any) {
+    console.error("Lỗi Firestore saveSubtitle:", error);
+    throw error;
+  }
 };
 
 export const getSubtitles = async (movieId: string) => {

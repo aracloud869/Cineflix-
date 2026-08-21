@@ -31,6 +31,7 @@ export function MovieDetails() {
   const [newComment, setNewComment] = useState('');
   const [subtitleFile, setSubtitleFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   
   useEffect(() => {
     if (id) {
@@ -55,71 +56,77 @@ export function MovieDetails() {
     }
 
     setUploading(true);
-    console.log('Bắt đầu tải phụ đề...', subtitleFile.name);
+    setUploadProgress(0);
+    console.log('--- BẮT ĐẦU QUÁ TRÌNH TẢI PHỤ ĐỀ ---');
     
     try {
       // 1. Upload to Storage
       const storagePath = `subtitles/${id}/${Date.now()}_${subtitleFile.name}`;
       const storageRef = ref(storage, storagePath);
       
-      console.log('Đang tải lên Storage:', storagePath);
-      
+      console.log('Bước 1: Đang gửi file lên Storage...');
       const uploadTask = uploadBytesResumable(storageRef, subtitleFile);
 
-      // Tạo promise để theo dõi trạng thái upload
       await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           uploadTask.cancel();
-          reject(new Error('TIMEOUT'));
+          reject(new Error('TIMEOUT_STORAGE'));
         }, 45000);
 
         uploadTask.on('state_changed', 
           (snapshot) => {
             const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            console.log('Tiến độ tải lên: ' + progress.toFixed(2) + '%');
+            setUploadProgress(progress);
+            console.log(`Tiến độ Storage: ${progress.toFixed(2)}%`);
           }, 
           (error) => {
             clearTimeout(timeout);
+            console.error('Lỗi tại Bước 1 (Storage):', error);
             reject(error);
           }, 
           () => {
             clearTimeout(timeout);
+            console.log('Bước 1 HOÀN TẤT: File đã nằm trên Storage.');
             resolve(true);
           }
         );
       });
       
-      console.log('Tải lên Storage thành công');
-      
       // 2. Get URL
+      console.log('Bước 2: Đang lấy URL tải về...');
       const fileUrl = await getDownloadURL(storageRef);
-      console.log('Lấy URL thành công:', fileUrl);
+      console.log('Bước 2 HOÀN TẤT: URL =', fileUrl);
 
       // 3. Save to Firestore
+      console.log('Bước 3: Đang lưu thông tin vào Firestore...');
       await saveSubtitle(id, subtitleFile.name, fileUrl, user.uid);
-      console.log('Lưu vào Firestore thành công');
+      console.log('Bước 3 HOÀN TẤT.');
       
-      alert('Đã tải phụ đề thành công!');
+      alert('THÀNH CÔNG: Phụ đề đã được chia sẻ!');
       setSubtitleFile(null);
+      setUploadProgress(0);
       
       // Refresh list
       const updatedSubtitles = await getSubtitles(id);
       setSubtitles(updatedSubtitles);
     } catch (error: any) {
-      console.error('Lỗi chi tiết khi tải phụ đề:', error);
+      console.error('--- LỖI TẢI PHỤ ĐỀ ---');
       let errorMsg = 'Có lỗi xảy ra khi tải phụ đề.';
       
-      if (error.message === 'TIMEOUT') {
-        errorMsg = 'Quá thời gian tải lên (45s). Vui lòng kiểm tra lại kết nối mạng hoặc thử lại với file dung lượng nhỏ hơn.';
+      if (error.message === 'TIMEOUT_STORAGE') {
+        errorMsg = 'LỖI: Quá thời gian gửi file (45s). Firebase Storage có vẻ đang bị chặn hoặc chưa được kích hoạt.';
       } else if (error.code === 'storage/unauthorized' || error.message?.includes('permission')) {
-        errorMsg = 'Lỗi phân quyền! Bạn cần thiết lập "Storage Rules" trong Firebase Console thành: allow read, write: if request.auth != null;';
+        errorMsg = 'LỖI PHÂN QUYỀN: Bạn chưa thiết lập "Storage Rules". Hãy vào Firebase Console -> Storage -> Rules và đổi thành: allow read, write: if request.auth != null;';
+      } else if (error.code === 'storage/unknown' || error.code === 'storage/retry-limit-exceeded') {
+        errorMsg = 'LỖI STORAGE: Chưa kích hoạt Storage hoặc lỗi mạng. Hãy vào Firebase Console -> Storage và nhấn nút "Get Started".';
       } else if (error.message?.includes('index')) {
-        errorMsg = 'Thiếu Index Firestore! Vui lòng kiểm tra Console log (F12) và nhấn vào link trong thông báo lỗi để tạo Index.';
+        errorMsg = 'LỖI DỮ LIỆU: Thiếu Index Firestore. Vui lòng kiểm tra Console (F12) để lấy link tạo Index.';
       }
       
-      alert(errorMsg + '\n\nChi tiết lỗi: ' + (error.message || error));
+      alert(errorMsg + '\n\nChi tiết: ' + (error.message || error.code || 'Unknown'));
     } finally {
       setUploading(false);
+      setUploadProgress(0);
     }
   };
   const [selectedEpisodeIdx, setSelectedEpisodeIdx] = useState<number>(0);
@@ -741,12 +748,18 @@ export function MovieDetails() {
                     <button 
                       onClick={handleAddSubtitle} 
                       disabled={uploading || !subtitleFile} 
-                      className="w-full sm:w-auto bg-[#E50914] text-white py-1.5 px-4 rounded-lg text-xs font-bold hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      className="w-full sm:w-auto bg-[#E50914] text-white py-1.5 px-4 rounded-lg text-xs font-bold hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 min-w-[120px] relative overflow-hidden"
                     >
+                      {uploading && (
+                        <div 
+                          className="absolute bottom-0 left-0 h-1 bg-white/40 transition-all duration-300" 
+                          style={{ width: `${uploadProgress}%` }}
+                        />
+                      )}
                       {uploading ? (
                         <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                       ) : <Share2 className="w-3 h-3" />}
-                      {uploading ? 'Đang tải...' : 'Đóng góp'}
+                      <span>{uploading ? `Đang tải ${Math.round(uploadProgress)}%` : 'Đóng góp'}</span>
                     </button>
                   </div>
                 ) : (
