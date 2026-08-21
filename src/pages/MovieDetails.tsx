@@ -15,7 +15,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage';
 import { mapSourceName, extractSlug, detectAudioQualityInfo, detectAudioInfo, detectQualityInfo, detectMovieType } from '../utils';
 import { useAuth } from '../context/AuthContext';
 import { Comment } from '../types';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage, db } from '../firebase';
 import { saveWatchedMovie, saveComment, getComments, getSubtitles, saveSubtitle } from '../db/firestore';
 
@@ -65,32 +65,16 @@ export function MovieDetails() {
       const storageRef = ref(storage, storagePath);
       
       console.log('Bước 1: Đang gửi file lên Storage...');
-      const uploadTask = uploadBytesResumable(storageRef, subtitleFile);
-
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          uploadTask.cancel();
-          reject(new Error('TIMEOUT_STORAGE'));
-        }, 45000);
-
-        uploadTask.on('state_changed', 
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setUploadProgress(progress);
-            console.log(`Tiến độ Storage: ${progress.toFixed(2)}%`);
-          }, 
-          (error) => {
-            clearTimeout(timeout);
-            console.error('Lỗi tại Bước 1 (Storage):', error);
-            reject(error);
-          }, 
-          () => {
-            clearTimeout(timeout);
-            console.log('Bước 1 HOÀN TẤT: File đã nằm trên Storage.');
-            resolve(true);
-          }
-        );
-      });
+      setUploadProgress(20);
+      
+      // Dùng uploadBytes thay vì resumable cho file nhỏ để tránh lỗi treo 0%
+      await Promise.race([
+        uploadBytes(storageRef, subtitleFile),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_STORAGE')), 30000))
+      ]);
+      
+      setUploadProgress(100);
+      console.log('Bước 1 HOÀN TẤT: File đã nằm trên Storage.');
       
       // 2. Get URL
       console.log('Bước 2: Đang lấy URL tải về...');
@@ -114,7 +98,7 @@ export function MovieDetails() {
       let errorMsg = 'Có lỗi xảy ra khi tải phụ đề.';
       
       if (error.message === 'TIMEOUT_STORAGE') {
-        errorMsg = 'LỖI: Quá thời gian gửi file (45s). Firebase Storage có vẻ đang bị chặn hoặc chưa được kích hoạt.';
+        errorMsg = 'LỖI: Quá thời gian gửi file (30s). CẢNH BÁO: Bạn đã nhấn nút "Get Started" trong tab Storage của Firebase Console chưa? Nếu chưa app sẽ treo ở 0%.';
       } else if (error.code === 'storage/unauthorized' || error.message?.includes('permission')) {
         errorMsg = 'LỖI PHÂN QUYỀN: Bạn chưa thiết lập "Storage Rules". Hãy vào Firebase Console -> Storage -> Rules và đổi thành: allow read, write: if request.auth != null;';
       } else if (error.code === 'storage/unknown' || error.code === 'storage/retry-limit-exceeded') {
