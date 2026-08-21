@@ -15,7 +15,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage';
 import { mapSourceName, extractSlug, detectAudioQualityInfo, detectAudioInfo, detectQualityInfo, detectMovieType } from '../utils';
 import { useAuth } from '../context/AuthContext';
 import { Comment } from '../types';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage, db } from '../firebase';
 import { saveWatchedMovie, saveComment, getComments, getSubtitles, saveSubtitle } from '../db/firestore';
 
@@ -56,14 +56,40 @@ export function MovieDetails() {
 
     setUploading(true);
     console.log('Bắt đầu tải phụ đề...', subtitleFile.name);
+    
     try {
       // 1. Upload to Storage
       const storagePath = `subtitles/${id}/${Date.now()}_${subtitleFile.name}`;
       const storageRef = ref(storage, storagePath);
       
       console.log('Đang tải lên Storage:', storagePath);
-      const uploadResult = await uploadBytes(storageRef, subtitleFile);
-      console.log('Tải lên Storage thành công:', uploadResult);
+      
+      const uploadTask = uploadBytesResumable(storageRef, subtitleFile);
+
+      // Tạo promise để theo dõi trạng thái upload
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          uploadTask.cancel();
+          reject(new Error('TIMEOUT'));
+        }, 45000);
+
+        uploadTask.on('state_changed', 
+          (snapshot) => {
+            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+            console.log('Tiến độ tải lên: ' + progress.toFixed(2) + '%');
+          }, 
+          (error) => {
+            clearTimeout(timeout);
+            reject(error);
+          }, 
+          () => {
+            clearTimeout(timeout);
+            resolve(true);
+          }
+        );
+      });
+      
+      console.log('Tải lên Storage thành công');
       
       // 2. Get URL
       const fileUrl = await getDownloadURL(storageRef);
@@ -83,7 +109,9 @@ export function MovieDetails() {
       console.error('Lỗi chi tiết khi tải phụ đề:', error);
       let errorMsg = 'Có lỗi xảy ra khi tải phụ đề.';
       
-      if (error.code === 'storage/unauthorized' || error.message?.includes('permission')) {
+      if (error.message === 'TIMEOUT') {
+        errorMsg = 'Quá thời gian tải lên (45s). Vui lòng kiểm tra lại kết nối mạng hoặc thử lại với file dung lượng nhỏ hơn.';
+      } else if (error.code === 'storage/unauthorized' || error.message?.includes('permission')) {
         errorMsg = 'Lỗi phân quyền! Bạn cần thiết lập "Storage Rules" trong Firebase Console thành: allow read, write: if request.auth != null;';
       } else if (error.message?.includes('index')) {
         errorMsg = 'Thiếu Index Firestore! Vui lòng kiểm tra Console log (F12) và nhấn vào link trong thông báo lỗi để tạo Index.';
@@ -706,8 +734,9 @@ export function MovieDetails() {
                     <input 
                       type="file" 
                       accept=".vtt,.srt" 
+                      disabled={uploading}
                       onChange={(e) => setSubtitleFile(e.target.files ? e.target.files[0] : null)} 
-                      className="text-xs text-gray-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[11px] file:font-bold file:bg-white/10 file:text-white hover:file:bg-white/20 cursor-pointer"
+                      className="text-xs text-gray-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[11px] file:font-bold file:bg-white/10 file:text-white hover:file:bg-white/20 cursor-pointer disabled:opacity-50"
                     />
                     <button 
                       onClick={handleAddSubtitle} 

@@ -18,7 +18,11 @@ export const getSubtitles = async (movieId: string) => {
     const snapshot = await getDocs(q);
     const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
     // Manual sort instead of Firestore sort to avoid Index requirement
-    return results.sort((a: any, b: any) => (b.addedAt?.seconds || 0) - (a.addedAt?.seconds || 0));
+    return results.sort((a: any, b: any) => {
+      const dateA = a.addedAt?.seconds ? a.addedAt.seconds : (a.addedAt instanceof Date ? a.addedAt.getTime() : 0);
+      const dateB = b.addedAt?.seconds ? b.addedAt.seconds : (b.addedAt instanceof Date ? b.addedAt.getTime() : 0);
+      return dateB - dateA;
+    });
   } catch (error) {
     console.error("Error getting subtitles:", error);
     return [];
@@ -46,7 +50,11 @@ export const getComments = async (movieId: string): Promise<Comment[]> => {
     const querySnapshot = await getDocs(q);
     const results = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment));
     // Manual sort instead of Firestore sort to avoid Index requirement
-    return results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return results.sort((a, b) => {
+      const dateA = (a as any).createdAt?.seconds ? (a as any).createdAt.seconds : (a.createdAt || 0);
+      const dateB = (b as any).createdAt?.seconds ? (b as any).createdAt.seconds : (b.createdAt || 0);
+      return dateB - dateA;
+    });
   } catch (error) {
     console.error("Error getting comments:", error);
     return [];
