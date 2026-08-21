@@ -15,7 +15,7 @@ import { useLocalStorage } from '../hooks/useLocalStorage';
 import { mapSourceName, extractSlug, detectAudioQualityInfo, detectAudioInfo, detectQualityInfo, detectMovieType } from '../utils';
 import { useAuth } from '../context/AuthContext';
 import { Comment } from '../types';
-import { doc, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { storage, db } from '../firebase';
 import { saveWatchedMovie, saveComment, getComments, getSubtitles, saveSubtitle } from '../db/firestore';
 

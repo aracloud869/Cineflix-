@@ -10,7 +10,7 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ 
   const [isLogin, setIsLogin] = useState(true);
   const [displayName, setDisplayName] = useState('');
   const [photoURL, setPhotoURL] = useState('');
-  const { user } = useAuth();
+  const { user, signInWithGoogle, logout } = useAuth();
 
   if (!isOpen) return null;
 
@@ -28,6 +28,16 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ 
       console.error(error);
       alert('Authentication failed');
     }
+  };
+
+  const handleGoogleSignIn = async () => {
+    await signInWithGoogle();
+    onClose();
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    onClose();
   };
 
   const handleUpdateProfile = async () => {
@@ -69,7 +79,7 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ 
               <button onClick={handleUpdateProfile} className="w-full bg-[#E50914] hover:bg-red-700 p-3 rounded-lg font-bold transition">
                 Cập nhật hồ sơ
               </button>
-              <button onClick={() => { auth.signOut(); onClose(); }} className="w-full p-3 rounded-lg font-bold bg-white/5 hover:bg-white/10 transition">
+              <button onClick={handleLogout} className="w-full p-3 rounded-lg font-bold bg-white/5 hover:bg-white/10 transition">
                 Đăng xuất
               </button>
             </div>
@@ -77,6 +87,19 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ 
         ) : (
           <>
             <h2 className="text-2xl font-bold mb-6 text-center">{isLogin ? 'Đăng nhập' : 'Đăng ký'}</h2>
+            <button 
+              onClick={handleGoogleSignIn}
+              className="w-full mb-6 flex items-center justify-center gap-3 bg-white text-black p-3 rounded-lg font-bold hover:bg-gray-200 transition"
+            >
+              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+              Tiếp tục với Google
+            </button>
+
+            <div className="relative mb-6">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-800"></div></div>
+              <div className="relative flex justify-center text-xs uppercase"><span className="bg-[#141414] px-2 text-gray-500">Hoặc</span></div>
+            </div>
+
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               <input
                 type="email"
