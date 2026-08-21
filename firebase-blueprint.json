@@ -1,0 +1,38 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile and role",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "watched": { "type": "array" }
+      }
+    },
+    "subtitle": {
+      "title": "Subtitle",
+      "description": "Subtitle for a movie",
+      "type": "object",
+      "properties": {
+        "movieId": { "type": "string" },
+        "name": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "addedBy": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "user",
+      "description": "User profiles"
+    },
+    "/subtitles/{subtitleId}": {
+      "schema": "subtitle",
+      "description": "Subtitles for movies"
+    }
+  }
+}
