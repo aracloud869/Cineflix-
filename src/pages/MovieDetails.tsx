@@ -33,6 +33,47 @@ export function MovieDetails() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   
+  const [selectedEpisodeIdx, setSelectedEpisodeIdx] = useState<number>(0);
+  const [episodeSearch, setEpisodeSearch] = useState('');
+  const [selectedRangeIdx, setSelectedRangeIdx] = useState(0);
+  const [copiedToast, setCopiedToast] = useState<'link' | 'id' | null>(null);
+
+  const [favorites, setFavorites] = useLocalStorage<string[]>('cineflix-favorites', []);
+  const [history, setHistory] = useLocalStorage<any[]>('cineflix-history', []);
+
+  // 1. Get unified movie list to resolve sources
+  const { data: movies = [] } = useQuery({
+    queryKey: ['unified-catalog'],
+    queryFn: fetchUnifiedCatalog,
+  });
+
+  const unifiedMovie = movies.find(m => m.id === id || (id && m.sourceIds.includes(id)));
+  const movieSourceIds = unifiedMovie?.sourceIds || (id ? [id] : []);
+
+  // 2. Fetch all metadata for all sources of this movie
+  const { data: allMetas = [], isLoading: metaLoading } = useQuery({
+    queryKey: ['meta-all', movieSourceIds],
+    queryFn: async () => {
+      if (!movieSourceIds.length) return [];
+      const promises = movieSourceIds.map(srcId => 
+        fetchMeta(srcId).catch(() => null)
+      );
+      const results = await Promise.all(promises);
+      return results.filter(Boolean) as { meta: any }[];
+    },
+    enabled: movieSourceIds.length > 0,
+  });
+
+  const primaryMeta = allMetas[0]?.meta || {
+    id: id || '',
+    name: unifiedMovie?.name || 'Chi Tiết Phim',
+    poster: unifiedMovie?.poster || '',
+    background: unifiedMovie?.background || '',
+    description: unifiedMovie?.overview || '',
+    releaseInfo: unifiedMovie?.releaseInfo || '2026',
+    videos: []
+  };
+
   useEffect(() => {
     const fetchData = async () => {
       const targetId = primaryMeta.id || id;
@@ -123,46 +164,6 @@ export function MovieDetails() {
       setUploading(false);
       setUploadProgress(0);
     }
-  };
-  const [selectedEpisodeIdx, setSelectedEpisodeIdx] = useState<number>(0);
-  const [episodeSearch, setEpisodeSearch] = useState('');
-  const [selectedRangeIdx, setSelectedRangeIdx] = useState(0);
-  const [copiedToast, setCopiedToast] = useState<'link' | 'id' | null>(null);
-
-  const [favorites, setFavorites] = useLocalStorage<string[]>('cineflix-favorites', []);
-  const [history, setHistory] = useLocalStorage<any[]>('cineflix-history', []);
-
-  // 1. Get unified movie list to resolve sources
-  const { data: movies = [] } = useQuery({
-    queryKey: ['unified-catalog'],
-    queryFn: fetchUnifiedCatalog,
-  });
-
-  const unifiedMovie = movies.find(m => m.id === id || (id && m.sourceIds.includes(id)));
-  const movieSourceIds = unifiedMovie?.sourceIds || (id ? [id] : []);
-
-  // 2. Fetch all metadata for all sources of this movie
-  const { data: allMetas = [], isLoading: metaLoading } = useQuery({
-    queryKey: ['meta-all', movieSourceIds],
-    queryFn: async () => {
-      if (!movieSourceIds.length) return [];
-      const promises = movieSourceIds.map(srcId => 
-        fetchMeta(srcId).catch(() => null)
-      );
-      const results = await Promise.all(promises);
-      return results.filter(Boolean) as { meta: any }[];
-    },
-    enabled: movieSourceIds.length > 0,
-  });
-
-  const primaryMeta = allMetas[0]?.meta || {
-    id: id || '',
-    name: unifiedMovie?.name || 'Chi Tiết Phim',
-    poster: unifiedMovie?.poster || '',
-    background: unifiedMovie?.background || '',
-    description: unifiedMovie?.overview || '',
-    releaseInfo: unifiedMovie?.releaseInfo || '2026',
-    videos: []
   };
 
   // 3. Aggregate episodes across all sources
