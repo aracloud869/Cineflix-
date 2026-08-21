@@ -49,36 +49,47 @@ export function MovieDetails() {
   const handleAddSubtitle = async () => {
     if (!user || !id || !subtitleFile) return;
 
-    if (subtitleFile.size > 7 * 1024 * 1024) {
-      alert('File quá lớn! Vui lòng chọn file dưới 7MB.');
+    if (subtitleFile.size > 10 * 1024 * 1024) {
+      alert('File quá lớn! Vui lòng chọn file dưới 10MB.');
       return;
     }
 
     setUploading(true);
-    console.log('Starting subtitle upload...', subtitleFile.name);
+    console.log('Bắt đầu tải phụ đề...', subtitleFile.name);
     try {
-      const storageRef = ref(storage, `subtitles/${Date.now()}_${subtitleFile.name}`);
-      console.log('Uploading to:', storageRef.fullPath);
-      const uploadResult = await uploadBytes(storageRef, subtitleFile);
-      console.log('Upload successful:', uploadResult);
+      // 1. Upload to Storage
+      const storagePath = `subtitles/${id}/${Date.now()}_${subtitleFile.name}`;
+      const storageRef = ref(storage, storagePath);
       
+      console.log('Đang tải lên Storage:', storagePath);
+      const uploadResult = await uploadBytes(storageRef, subtitleFile);
+      console.log('Tải lên Storage thành công:', uploadResult);
+      
+      // 2. Get URL
       const fileUrl = await getDownloadURL(storageRef);
-      console.log('Download URL obtained:', fileUrl);
+      console.log('Lấy URL thành công:', fileUrl);
 
+      // 3. Save to Firestore
       await saveSubtitle(id, subtitleFile.name, fileUrl, user.uid);
+      console.log('Lưu vào Firestore thành công');
+      
       alert('Đã tải phụ đề thành công!');
       setSubtitleFile(null);
+      
+      // Refresh list
       const updatedSubtitles = await getSubtitles(id);
       setSubtitles(updatedSubtitles);
     } catch (error: any) {
-      console.error('Error uploading subtitle:', error);
-      let errorMsg = 'Có lỗi xảy ra khi upload.';
-      if (error.code === 'storage/unauthorized') {
-        errorMsg = 'Bạn không có quyền upload. Vui lòng kiểm tra Firebase Storage Rules.';
-      } else if (error.code === 'storage/retry-limit-exceeded') {
-        errorMsg = 'Quá thời gian upload. Vui lòng thử lại với mạng ổn định hơn.';
+      console.error('Lỗi chi tiết khi tải phụ đề:', error);
+      let errorMsg = 'Có lỗi xảy ra khi tải phụ đề.';
+      
+      if (error.code === 'storage/unauthorized' || error.message?.includes('permission')) {
+        errorMsg = 'Lỗi phân quyền! Bạn cần thiết lập "Storage Rules" trong Firebase Console thành: allow read, write: if request.auth != null;';
+      } else if (error.message?.includes('index')) {
+        errorMsg = 'Thiếu Index Firestore! Vui lòng kiểm tra Console log (F12) và nhấn vào link trong thông báo lỗi để tạo Index.';
       }
-      alert(errorMsg + '\nChi tiết: ' + (error.message || error));
+      
+      alert(errorMsg + '\n\nChi tiết lỗi: ' + (error.message || error));
     } finally {
       setUploading(false);
     }
@@ -678,26 +689,78 @@ export function MovieDetails() {
             </div>
           )}
 
-          {/* TAB 4: SUBTITLES */}
+          {/* TAB 5: SUBTITLES */}
           {activeTab === 'subtitles' && (
-            <div className="bg-[#12131b] border border-white/5 rounded-2xl p-6 space-y-6">
-              <h3 className="text-xl font-bold">Phụ đề</h3>
-              {user ? (
-                <div className="flex flex-col gap-2">
-                  <input type="file" accept=".vtt,.srt" onChange={(e) => setSubtitleFile(e.target.files ? e.target.files[0] : null)} className="p-3 bg-white/10 rounded w-full" />
-                  <button onClick={handleAddSubtitle} disabled={uploading} className="bg-[#E50914] text-white py-2 px-4 rounded-lg font-bold hover:bg-red-700 transition disabled:opacity-50">
-                    {uploading ? 'Đang tải lên...' : 'Tải phụ đề lên'}
-                  </button>
+            <div className="bg-[#12131b] border border-white/5 rounded-2xl p-6 space-y-8">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                    <Globe className="w-5 h-5 text-[#E50914]" />
+                    Phụ Đề Cộng Đồng
+                  </h3>
+                  <p className="text-gray-400 text-xs mt-1">Nơi chia sẻ phụ đề tiếng Việt cho cộng đồng.</p>
                 </div>
-              ) : (
-                <p className="text-gray-400">Vui lòng đăng nhập để tải phụ đề.</p>
-              )}
-              <div className="space-y-2 mt-6">
-                {subtitles.map(s => (
-                  <a key={s.id} href={s.fileUrl} target="_blank" rel="noreferrer" className="block p-4 bg-[#1a1b23] rounded-lg hover:bg-[#20212e] text-white">
-                    {s.name}
-                  </a>
-                ))}
+                
+                {user ? (
+                  <div className="flex flex-col sm:flex-row items-center gap-2 bg-black/40 p-2 rounded-xl border border-white/5">
+                    <input 
+                      type="file" 
+                      accept=".vtt,.srt" 
+                      onChange={(e) => setSubtitleFile(e.target.files ? e.target.files[0] : null)} 
+                      className="text-xs text-gray-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-[11px] file:font-bold file:bg-white/10 file:text-white hover:file:bg-white/20 cursor-pointer"
+                    />
+                    <button 
+                      onClick={handleAddSubtitle} 
+                      disabled={uploading || !subtitleFile} 
+                      className="w-full sm:w-auto bg-[#E50914] text-white py-1.5 px-4 rounded-lg text-xs font-bold hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {uploading ? (
+                        <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      ) : <Share2 className="w-3 h-3" />}
+                      {uploading ? 'Đang tải...' : 'Đóng góp'}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="px-4 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs font-medium">
+                    Vui lòng đăng nhập để đóng góp phụ đề.
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-gray-500 uppercase tracking-widest">Danh sách phụ đề</h4>
+                
+                {subtitles.length > 0 ? (
+                  <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide select-none">
+                    {subtitles.map((s, idx) => (
+                      <a 
+                        key={s.id || idx} 
+                        href={s.fileUrl} 
+                        target="_blank" 
+                        rel="noreferrer" 
+                        className="flex-shrink-0 w-64 p-4 bg-[#1a1b23] border border-white/5 rounded-xl hover:border-red-500/50 hover:bg-[#20212e] transition-all group relative overflow-hidden"
+                      >
+                        <div className="absolute top-0 left-0 w-1 h-full bg-[#E50914] opacity-0 group-hover:opacity-100 transition-opacity" />
+                        <div className="flex items-start gap-3">
+                          <div className="bg-white/5 w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center group-hover:bg-red-600/20 transition-colors">
+                            <Globe className="w-5 h-5 text-gray-400 group-hover:text-red-500" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-bold text-white truncate mb-1" title={s.name}>{s.name}</p>
+                            <p className="text-[10px] text-gray-500 font-medium truncate">
+                              Bởi: {s.addedBy === user?.uid ? 'Tôi' : (s.addedBy === 'admin' ? 'Hệ thống' : 'Người dùng')}
+                            </p>
+                          </div>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="py-12 flex flex-col items-center justify-center bg-black/20 rounded-2xl border border-dashed border-white/10">
+                    <Globe className="w-10 h-10 text-gray-600 mb-3" />
+                    <p className="text-gray-500 text-sm">Chưa có phụ đề nào được tải lên cho phim này.</p>
+                  </div>
+                )}
               </div>
             </div>
           )}

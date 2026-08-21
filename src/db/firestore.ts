@@ -13,9 +13,16 @@ export const saveSubtitle = async (movieId: string, name: string, fileUrl: strin
 };
 
 export const getSubtitles = async (movieId: string) => {
-  const q = query(collection(db, 'subtitles'), where('movieId', '==', movieId), orderBy('addedAt', 'desc'));
-  const snapshot = await getDocs(q);
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  try {
+    const q = query(collection(db, 'subtitles'), where('movieId', '==', movieId));
+    const snapshot = await getDocs(q);
+    const results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    // Manual sort instead of Firestore sort to avoid Index requirement
+    return results.sort((a: any, b: any) => (b.addedAt?.seconds || 0) - (a.addedAt?.seconds || 0));
+  } catch (error) {
+    console.error("Error getting subtitles:", error);
+    return [];
+  }
 };
 
 export const saveComment = async (movieId: string, userId: string, userName: string, userAvatar: string, text: string) => {
@@ -35,9 +42,11 @@ export const saveComment = async (movieId: string, userId: string, userName: str
 
 export const getComments = async (movieId: string): Promise<Comment[]> => {
   try {
-    const q = query(collection(db, 'comments'), where('movieId', '==', movieId), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'comments'), where('movieId', '==', movieId));
     const querySnapshot = await getDocs(q);
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment));
+    const results = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Comment));
+    // Manual sort instead of Firestore sort to avoid Index requirement
+    return results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   } catch (error) {
     console.error("Error getting comments:", error);
     return [];
