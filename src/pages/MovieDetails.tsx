@@ -281,7 +281,7 @@ export function MovieDetails() {
         movieId: id,
         movieName: primaryMeta.name,
         poster: primaryMeta.poster || primaryMeta.background || '',
-        episodeId: currentEpisode?.sourceVideoIds[0],
+        episodeId: currentEpisode?.sourceVideoIds?.[0],
         episodeTitle: currentEpisode?.title || 'Bản Đầy Đủ',
         updatedAt: Date.now()
       };

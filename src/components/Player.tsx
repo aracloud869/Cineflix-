@@ -1533,7 +1533,7 @@ export const Player: React.FC<PlayerProps> = ({
               {allStreams.map((s, idx) => {
                 const isCurrent = s === stream;
                 const sName = mapSourceName(s.name || s.sourceName || `Server ${idx + 1}`, s.title || s.name);
-                const sTitle = s.title?.split('\n')[0] || 'Phát HD';
+                const sTitle = s.title?.split('\n')?.[0] || 'Phát HD';
                 const sType = detectStreamType(s.url || s.externalUrl);
 
                 return (
