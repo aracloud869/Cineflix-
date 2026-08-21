@@ -24,15 +24,27 @@ export const AuthModal: React.FC<{ isOpen: boolean; onClose: () => void }> = ({ 
         await updateProfile(userCredential.user, { displayName, photoURL });
       }
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
-      alert('Authentication failed');
+      let errorMsg = 'Đăng nhập thất bại. Vui lòng kiểm tra lại thông tin.';
+      if (error.code === 'auth/invalid-credential') {
+        errorMsg = 'Email hoặc mật khẩu không chính xác.';
+      } else if (error.code === 'auth/user-not-found') {
+        errorMsg = 'Tài khoản không tồn tại.';
+      } else if (error.code === 'auth/wrong-password') {
+        errorMsg = 'Mật khẩu không chính xác.';
+      }
+      alert(errorMsg + '\nChi tiết: ' + (error.message || error));
     }
   };
 
   const handleGoogleSignIn = async () => {
-    await signInWithGoogle();
-    onClose();
+    try {
+      await signInWithGoogle();
+      onClose();
+    } catch (error) {
+      // Error is handled in signInWithGoogle
+    }
   };
 
   const handleLogout = async () => {

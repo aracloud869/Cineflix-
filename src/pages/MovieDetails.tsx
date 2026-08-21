@@ -55,18 +55,30 @@ export function MovieDetails() {
     }
 
     setUploading(true);
+    console.log('Starting subtitle upload...', subtitleFile.name);
     try {
       const storageRef = ref(storage, `subtitles/${Date.now()}_${subtitleFile.name}`);
-      await uploadBytes(storageRef, subtitleFile);
+      console.log('Uploading to:', storageRef.fullPath);
+      const uploadResult = await uploadBytes(storageRef, subtitleFile);
+      console.log('Upload successful:', uploadResult);
+      
       const fileUrl = await getDownloadURL(storageRef);
+      console.log('Download URL obtained:', fileUrl);
 
-      await saveSubtitle(id, subtitleFile.name, fileUrl);
+      await saveSubtitle(id, subtitleFile.name, fileUrl, user.uid);
       alert('Đã tải phụ đề thành công!');
       setSubtitleFile(null);
-      getSubtitles(id).then(setSubtitles);
-    } catch (error) {
+      const updatedSubtitles = await getSubtitles(id);
+      setSubtitles(updatedSubtitles);
+    } catch (error: any) {
       console.error('Error uploading subtitle:', error);
-      alert('Có lỗi xảy ra khi upload.');
+      let errorMsg = 'Có lỗi xảy ra khi upload.';
+      if (error.code === 'storage/unauthorized') {
+        errorMsg = 'Bạn không có quyền upload. Vui lòng kiểm tra Firebase Storage Rules.';
+      } else if (error.code === 'storage/retry-limit-exceeded') {
+        errorMsg = 'Quá thời gian upload. Vui lòng thử lại với mạng ổn định hơn.';
+      }
+      alert(errorMsg + '\nChi tiết: ' + (error.message || error));
     } finally {
       setUploading(false);
     }

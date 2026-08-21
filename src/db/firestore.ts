@@ -2,11 +2,12 @@ import { doc, getDoc, setDoc, updateDoc, arrayUnion, collection, addDoc, query, 
 import { db } from '../firebase';
 import { Comment } from '../types';
 
-export const saveSubtitle = async (movieId: string, name: string, fileUrl: string) => {
+export const saveSubtitle = async (movieId: string, name: string, fileUrl: string, userId: string) => {
   await addDoc(collection(db, 'subtitles'), {
     movieId,
     name,
     fileUrl,
+    addedBy: userId,
     addedAt: new Date()
   });
 };
@@ -52,12 +53,13 @@ export const saveWatchedMovie = async (userId: string, movie: any) => {
   );
 
   try {
-    await updateDoc(userRef, {
+    // Using setDoc with merge: true is a more robust "upsert" pattern
+    // It creates the document if it doesn't exist, and merges if it does.
+    await setDoc(userRef, {
       watched: arrayUnion(cleanMovie)
-    });
+    }, { merge: true });
   } catch (error) {
-    console.error("Error updating watched movie, attempting setDoc:", error);
-    await setDoc(userRef, { watched: [cleanMovie] }, { merge: true });
+    console.error("Error saving watched movie:", error);
   }
 };
 

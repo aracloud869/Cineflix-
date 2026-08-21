@@ -23,6 +23,19 @@
         "fileUrl": { "type": "string" },
         "addedBy": { "type": "string" }
       }
+    },
+    "comment": {
+      "title": "Comment",
+      "description": "Comment on a movie",
+      "type": "object",
+      "properties": {
+        "movieId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userAvatar": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "number" }
+      }
     }
   },
   "firestore": {
@@ -33,6 +46,10 @@
     "/subtitles/{subtitleId}": {
       "schema": "subtitle",
       "description": "Subtitles for movies"
+    },
+    "/comments/{commentId}": {
+      "schema": "comment",
+      "description": "User comments on movies"
     }
   }
 }
