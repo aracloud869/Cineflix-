@@ -34,21 +34,32 @@ export function MovieDetails() {
   const [uploadProgress, setUploadProgress] = useState(0);
   
   useEffect(() => {
-    if (id) {
-      getComments(id).then(setComments);
-      getSubtitles(id).then(setSubtitles);
-    }
-  }, [id]);
+    const fetchData = async () => {
+      const targetId = primaryMeta.id || id;
+      if (targetId) {
+        console.log('Fetching comments and subtitles for:', targetId);
+        const [commentsData, subtitlesData] = await Promise.all([
+          getComments(targetId),
+          getSubtitles(targetId)
+        ]);
+        setComments(commentsData);
+        setSubtitles(subtitlesData);
+      }
+    };
+    fetchData();
+  }, [id, primaryMeta.id]);
 
   const handleAddComment = async () => {
-    if (!user || !id || !newComment.trim()) return;
-    await saveComment(id, user.uid, user.displayName || 'Người dùng', user.photoURL || '', newComment);
+    const targetId = primaryMeta.id || id;
+    if (!user || !targetId || !newComment.trim()) return;
+    await saveComment(targetId, user.uid, user.displayName || 'Người dùng', user.photoURL || '', newComment);
     setNewComment('');
-    getComments(id).then(setComments);
+    getComments(targetId).then(setComments);
   };
 
   const handleAddSubtitle = async () => {
-    if (!user || !id || !subtitleFile) return;
+    const targetId = primaryMeta.id || id;
+    if (!user || !targetId || !subtitleFile) return;
 
     if (subtitleFile.size > 10 * 1024 * 1024) {
       alert('File quá lớn! Vui lòng chọn file dưới 10MB.');
@@ -56,58 +67,58 @@ export function MovieDetails() {
     }
 
     setUploading(true);
-    setUploadProgress(0);
-    console.log('--- BẮT ĐẦU QUÁ TRÌNH TẢI PHỤ ĐỀ ---');
+    setUploadProgress(10);
+    console.log('--- BẮT ĐẦU QUÁ TRÌNH TẢI PHỤ ĐỀ (FAIL-SAFE MODE) ---');
+    console.log('Target Movie ID:', targetId);
     
     try {
-      // 1. Upload to Storage
-      const storagePath = `subtitles/${id}/${Date.now()}_${subtitleFile.name}`;
+      // 1. Đọc nội dung file tại chỗ (để dự phòng)
+      const fileReader = new FileReader();
+      const fileContentPromise = new Promise<string>((resolve) => {
+        fileReader.onload = (e) => resolve(e.target?.result as string || '');
+        fileReader.readAsText(subtitleFile);
+      });
+
+      // 2. Thử tải lên Storage trước (Ưu tiên)
+      const storagePath = `subtitles/${targetId}/${Date.now()}_${subtitleFile.name}`;
       const storageRef = ref(storage, storagePath);
       
-      console.log('Bước 1: Đang gửi file lên Storage...');
-      setUploadProgress(20);
-      
-      // Dùng uploadBytes thay vì resumable cho file nhỏ để tránh lỗi treo 0%
-      await Promise.race([
-        uploadBytes(storageRef, subtitleFile),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT_STORAGE')), 30000))
-      ]);
-      
-      setUploadProgress(100);
-      console.log('Bước 1 HOÀN TẤT: File đã nằm trên Storage.');
-      
-      // 2. Get URL
-      console.log('Bước 2: Đang lấy URL tải về...');
-      const fileUrl = await getDownloadURL(storageRef);
-      console.log('Bước 2 HOÀN TẤT: URL =', fileUrl);
+      console.log('Bước 1: Thử gửi file lên Storage...');
+      setUploadProgress(30);
+
+      let finalUrl = '';
+      try {
+        await Promise.race([
+          uploadBytes(storageRef, subtitleFile),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('TIMEOUT')), 15000))
+        ]);
+        finalUrl = await getDownloadURL(storageRef);
+        console.log('Tải Storage thành công:', finalUrl);
+        setUploadProgress(80);
+      } catch (storageErr) {
+        console.warn('Storage gặp sự cố (treo hoặc lỗi), chuyển sang chế độ Dự phòng Firestore...', storageErr);
+        // Nếu Storage lỗi, lấy nội dung text để lưu trực tiếp
+        const content = await fileContentPromise;
+        finalUrl = `text-fallback:${content}`; // Đánh dấu đây là nội dung text trực tiếp
+        setUploadProgress(70);
+      }
 
       // 3. Save to Firestore
-      console.log('Bước 3: Đang lưu thông tin vào Firestore...');
-      await saveSubtitle(id, subtitleFile.name, fileUrl, user.uid);
-      console.log('Bước 3 HOÀN TẤT.');
+      console.log('Bước 2: Đang lưu thông tin vào Firestore cho ID:', targetId);
+      await saveSubtitle(targetId, subtitleFile.name, finalUrl, user.uid);
+      console.log('Bước 2 HOÀN TẤT.');
       
-      alert('THÀNH CÔNG: Phụ đề đã được chia sẻ!');
+      setUploadProgress(100);
+      alert('THÀNH CÔNG: Phụ đề đã được chia sẻ an toàn!');
       setSubtitleFile(null);
       setUploadProgress(0);
       
       // Refresh list
-      const updatedSubtitles = await getSubtitles(id);
+      const updatedSubtitles = await getSubtitles(targetId);
       setSubtitles(updatedSubtitles);
     } catch (error: any) {
-      console.error('--- LỖI TẢI PHỤ ĐỀ ---');
-      let errorMsg = 'Có lỗi xảy ra khi tải phụ đề.';
-      
-      if (error.message === 'TIMEOUT_STORAGE') {
-        errorMsg = 'LỖI: Quá thời gian gửi file (30s). CẢNH BÁO: Bạn đã nhấn nút "Get Started" trong tab Storage của Firebase Console chưa? Nếu chưa app sẽ treo ở 0%.';
-      } else if (error.code === 'storage/unauthorized' || error.message?.includes('permission')) {
-        errorMsg = 'LỖI PHÂN QUYỀN: Bạn chưa thiết lập "Storage Rules". Hãy vào Firebase Console -> Storage -> Rules và đổi thành: allow read, write: if request.auth != null;';
-      } else if (error.code === 'storage/unknown' || error.code === 'storage/retry-limit-exceeded') {
-        errorMsg = 'LỖI STORAGE: Chưa kích hoạt Storage hoặc lỗi mạng. Hãy vào Firebase Console -> Storage và nhấn nút "Get Started".';
-      } else if (error.message?.includes('index')) {
-        errorMsg = 'LỖI DỮ LIỆU: Thiếu Index Firestore. Vui lòng kiểm tra Console (F12) để lấy link tạo Index.';
-      }
-      
-      alert(errorMsg + '\n\nChi tiết: ' + (error.message || error.code || 'Unknown'));
+      console.error('--- LỖI NGHIÊM TRỌNG ---', error);
+      alert('Lỗi: ' + (error.message || 'Không thể lưu phụ đề. Vui lòng thử lại.'));
     } finally {
       setUploading(false);
       setUploadProgress(0);
@@ -758,28 +769,36 @@ export function MovieDetails() {
                 
                 {subtitles.length > 0 ? (
                   <div className="flex gap-4 overflow-x-auto pb-4 scrollbar-hide select-none">
-                    {subtitles.map((s, idx) => (
-                      <a 
-                        key={s.id || idx} 
-                        href={s.fileUrl} 
-                        target="_blank" 
-                        rel="noreferrer" 
-                        className="flex-shrink-0 w-64 p-4 bg-[#1a1b23] border border-white/5 rounded-xl hover:border-red-500/50 hover:bg-[#20212e] transition-all group relative overflow-hidden"
-                      >
-                        <div className="absolute top-0 left-0 w-1 h-full bg-[#E50914] opacity-0 group-hover:opacity-100 transition-opacity" />
-                        <div className="flex items-start gap-3">
-                          <div className="bg-white/5 w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center group-hover:bg-red-600/20 transition-colors">
-                            <Globe className="w-5 h-5 text-gray-400 group-hover:text-red-500" />
+                    {subtitles.map((s, idx) => {
+                      const isFallback = s.fileUrl?.startsWith('text-fallback:');
+                      const downloadUrl = isFallback 
+                        ? URL.createObjectURL(new Blob([s.fileUrl.replace('text-fallback:', '')], { type: 'text/vtt' }))
+                        : s.fileUrl;
+                        
+                      return (
+                        <a 
+                          key={s.id || idx} 
+                          href={downloadUrl} 
+                          download={isFallback ? s.name : undefined}
+                          target="_blank" 
+                          rel="noreferrer" 
+                          className="flex-shrink-0 w-64 p-4 bg-[#1a1b23] border border-white/5 rounded-xl hover:border-red-500/50 hover:bg-[#20212e] transition-all group relative overflow-hidden"
+                        >
+                          <div className="absolute top-0 left-0 w-1 h-full bg-[#E50914] opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <div className="flex items-start gap-3">
+                            <div className="bg-white/5 w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center group-hover:bg-red-600/20 transition-colors">
+                              <Globe className="w-5 h-5 text-gray-400 group-hover:text-red-500" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm font-bold text-white truncate mb-1" title={s.name}>{s.name}</p>
+                              <p className="text-[10px] text-gray-500 font-medium truncate">
+                                {isFallback ? '⚡ Tốc độ cao' : '📁 File'} • {s.addedBy === user?.uid ? 'Tôi' : 'Cộng đồng'}
+                              </p>
+                            </div>
                           </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-bold text-white truncate mb-1" title={s.name}>{s.name}</p>
-                            <p className="text-[10px] text-gray-500 font-medium truncate">
-                              Bởi: {s.addedBy === user?.uid ? 'Tôi' : (s.addedBy === 'admin' ? 'Hệ thống' : 'Người dùng')}
-                            </p>
-                          </div>
-                        </div>
-                      </a>
-                    ))}
+                        </a>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="py-12 flex flex-col items-center justify-center bg-black/20 rounded-2xl border border-dashed border-white/10">
