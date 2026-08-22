@@ -10,6 +10,81 @@ const PORT = 3000;
 
 app.use(express.json());
 
+// Helper to resolve IMDb ID from TMDB search
+async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
+  const apiKey = process.env.TMDB_API_KEY || "15d2ea6d0dc1d476efbca3de441b1ddc";
+  const searchTypes: ('movie' | 'tv')[] = type === 'series' ? ['tv', 'movie'] : ['movie', 'tv'];
+
+  for (const sType of searchTypes) {
+    try {
+      console.log(`[TMDB Resolver] Searching TMDB (${sType}) for title: "${title}"`);
+      // 1. Search with Vietnamese or English locale
+      const searchRes = await axios.get(`https://api.themoviedb.org/3/search/${sType}`, {
+        params: {
+          api_key: apiKey,
+          query: title,
+          language: 'vi-VN'
+        }
+      });
+
+      let results = searchRes.data?.results || [];
+      if (results.length === 0) {
+        const enSearchRes = await axios.get(`https://api.themoviedb.org/3/search/${sType}`, {
+          params: {
+            api_key: apiKey,
+            query: title
+          }
+        });
+        results = enSearchRes.data?.results || [];
+      }
+
+      if (results.length > 0) {
+        const tmdbId = results[0].id;
+        console.log(`[TMDB Resolver] Found TMDB ID: ${tmdbId} for type: ${sType}`);
+        const extRes = await axios.get(`https://api.themoviedb.org/3/${sType}/${tmdbId}/external_ids`, {
+          params: {
+            api_key: apiKey
+          }
+        });
+        const imdbId = extRes.data?.imdb_id;
+        if (imdbId && imdbId.startsWith('tt')) {
+          console.log(`[TMDB Resolver] Successfully resolved IMDb ID: ${imdbId}`);
+          return imdbId;
+        }
+      }
+    } catch (error: any) {
+      console.warn(`[TMDB Resolver] TMDB search error for type ${sType}:`, error.message);
+    }
+  }
+  return null;
+}
+
+// Global IMDb ID Resolver
+async function getImdbId(idOrTitle: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
+  if (!idOrTitle) return null;
+  
+  let cleanId = idOrTitle.trim();
+  if (cleanId.includes(':')) {
+    const parts = cleanId.split(':');
+    cleanId = parts[parts.length - 1];
+  }
+  
+  if (/^tt\d{7,10}$/.test(cleanId)) {
+    return cleanId;
+  }
+
+  // If it is a slug/Vietnamese title, clean hyphens and search
+  let titleQuery = idOrTitle;
+  if (idOrTitle.includes(':')) {
+    const parts = idOrTitle.split(':');
+    // For source prefix like kkphim:yeu-yeu-cuoi, we want the last part
+    titleQuery = parts[parts.length - 1] || parts[0];
+  }
+  titleQuery = titleQuery.replace(/-/g, ' ').trim();
+
+  return await resolveImdbIdFromTmdb(titleQuery, type);
+}
+
 // SubDL API integration
 app.get("/api/subdl/vtt", async (req, res) => {
   const { imdb_id, type = 'movie' } = req.query;
@@ -19,9 +94,14 @@ app.get("/api/subdl/vtt", async (req, res) => {
     return res.status(400).json({ error: "Missing or invalid imdb_id" });
   }
 
-  // Only proceed if it looks like an IMDB ID (starts with tt)
-  if (!imdb_id.startsWith('tt')) {
-    return res.status(400).json({ error: "Not a valid IMDB ID (must start with tt)" });
+  let resolvedImdbId = imdb_id;
+  if (!resolvedImdbId.startsWith('tt')) {
+    const resolved = await getImdbId(resolvedImdbId, type === 'series' ? 'series' : 'movie');
+    if (resolved) {
+      resolvedImdbId = resolved;
+    } else {
+      return res.status(404).json({ error: "Could not resolve IMDb ID for SubDL search" });
+    }
   }
 
   try {
@@ -29,7 +109,7 @@ app.get("/api/subdl/vtt", async (req, res) => {
     const searchRes = await axios.get(`https://api.subdl.com/api/v1/subtitles`, {
       params: {
         api_key: SUBDL_API_KEY,
-        imdb_id: imdb_id,
+        imdb_id: resolvedImdbId,
         languages: "vi",
         type: type === 'series' ? 'tv' : 'movie'
       }
@@ -37,7 +117,7 @@ app.get("/api/subdl/vtt", async (req, res) => {
 
     if (!searchRes.data || searchRes.data.status === false) {
       const subdlError = searchRes.data?.error || "Unknown SubDL error";
-      console.warn(`SubDL API could not find media: ${imdb_id} - ${subdlError}`);
+      console.warn(`SubDL API could not find media: ${resolvedImdbId} - ${subdlError}`);
       return res.status(404).json({ error: `SubDL: ${subdlError}`, status: false });
     }
 
@@ -108,12 +188,27 @@ app.get("/api/opensubtitles", async (req, res) => {
     return res.status(400).json({ success: false, error: "Missing imdb_id or title" });
   }
 
+  let finalImdbId = imdb_id;
+  if (finalImdbId && typeof finalImdbId === 'string' && !finalImdbId.startsWith('tt')) {
+    const resolved = await getImdbId(finalImdbId);
+    if (resolved) {
+      finalImdbId = resolved;
+    }
+  }
+
+  if (!finalImdbId && title && typeof title === 'string') {
+    const resolved = await getImdbId(title);
+    if (resolved) {
+      finalImdbId = resolved;
+    }
+  }
+
   const params: any = {
     languages: languages
   };
 
-  if (imdb_id && typeof imdb_id === 'string') {
-    params.imdb_id = imdb_id.startsWith('tt') ? imdb_id.substring(2) : imdb_id;
+  if (finalImdbId && typeof finalImdbId === 'string' && finalImdbId.startsWith('tt')) {
+    params.imdb_id = finalImdbId.substring(2);
   } else if (title && typeof title === 'string') {
     params.query = title;
   }
@@ -240,7 +335,21 @@ app.get("/api/subtitles", async (req, res) => {
     let queryId = stremioId;
     if (stremioId.includes(':')) {
       const parts = stremioId.split(':');
-      queryId = parts[1] || parts[0];
+      // For cases like "kkphim-series:yeu-yeu-cuoi:1:1" or "ophim-series:yeu-yeu-cuoi", we want "yeu-yeu-cuoi"
+      if (parts[1] && !parts[1].match(/^\d+$/)) {
+        queryId = parts[1];
+      } else {
+        // Fallback to last part if parts[1] is a number (season)
+        queryId = parts.find(p => !p.match(/^\d+$/) && p !== 'series' && p !== 'movie' && p !== 'anime') || parts[0];
+      }
+    }
+
+    // Resolve IMDb ID for querying AIO & SubDL Stremio addons
+    const resolvedImdb = await getImdbId(queryId, type === 'series' ? 'series' : 'movie');
+    if (resolvedImdb) {
+      console.log(`[API Subtitles] Resolved queryId "${queryId}" -> "${resolvedImdb}"`);
+      queryId = resolvedImdb;
+      stremioId = resolvedImdb;
     }
 
     if (type === 'series' && season && episode) {

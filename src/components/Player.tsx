@@ -24,6 +24,7 @@ interface PlayerProps {
   onNextEpisode?: () => void;
   hasNextEpisode?: boolean;
   movieTitle?: string;
+  originName?: string;
   episodeTitle?: string;
   episodes?: PlayerEpisode[];
   currentEpisodeIdx?: number;
@@ -39,6 +40,7 @@ export const Player: React.FC<PlayerProps> = ({
   onNextEpisode,
   hasNextEpisode = false,
   movieTitle,
+  originName,
   episodeTitle,
   episodes = [],
   currentEpisodeIdx = 0,
@@ -169,36 +171,84 @@ export const Player: React.FC<PlayerProps> = ({
         const isSeries = episodes.length > 0;
         const epNum = (currentEpisodeIdx !== undefined ? currentEpisodeIdx + 1 : 1);
 
-        const res = await axios.get('/api/subtitles', {
-          params: {
-            id: movieId,
-            type: isSeries ? 'series' : 'movie',
-            season: 1,
-            episode: epNum
+        // Extract clean IMDb ID if there is one (handles cases like kkphim:tt1234567)
+        let cleanImdbId = '';
+        if (movieId) {
+          const parts = movieId.split(':');
+          const lastPart = parts[parts.length - 1];
+          if (/^tt\d{7,10}$/.test(lastPart)) {
+            cleanImdbId = lastPart;
+          } else if (/^tt\d{7,10}$/.test(movieId)) {
+            cleanImdbId = movieId;
           }
-        });
+        }
 
-        // 0. Fetch user-uploaded subtitles from Firestore
-        let userSubs: any[] = [];
+        // Initialize empty array of all subtitles
+        let allSubs: any[] = [];
+        let hasAutoSelected = false;
+        let autoSelectedIsVi = false;
+        
+        // Helper to update state incrementally
+        const addSubsToState = (newSubs: any[]) => {
+          if (!isMounted) return;
+          const uniqueNewSubs = newSubs.filter(newSub => !allSubs.some(existing => existing.id === newSub.id || existing.url === newSub.url));
+          if (uniqueNewSubs.length > 0) {
+            allSubs = [...allSubs, ...uniqueNewSubs];
+            setSubtitles([...allSubs]);
+            
+            // Auto-select Vietnamese subtitle, upgrading if we previously settled for a non-vi sub
+            if (!autoSelectedIsVi) {
+               const viSub = allSubs.find((s: any) => (s.lang || '').toLowerCase().includes('vi') || (s.lang || '').toLowerCase().includes('vie'));
+               if (viSub) {
+                 setActiveSubtitle(viSub);
+                 autoSelectedIsVi = true;
+                 hasAutoSelected = true;
+               } else if (!hasAutoSelected && allSubs.length > 0) {
+                 setActiveSubtitle(allSubs[0]);
+                 hasAutoSelected = true;
+               }
+            }
+          }
+        };
+
+        // 1. Fetch user-uploaded subtitles from Firestore
         try {
           const dbSubs = await getSubtitles(movieId);
-          userSubs = dbSubs.map((s: any) => ({
+          const userSubs = dbSubs.map((s: any) => ({
             url: s.fileUrl,
             lang: 'vie',
             langName: `Phụ đề người dùng: ${s.name}`,
             addon: 'User Upload',
-            id: s.id
+            id: s.id || s.fileUrl
           }));
+          addSubsToState(userSubs);
         } catch (e) {
           console.warn('Failed to fetch user subtitles:', e);
         }
 
-        if (isMounted && res.data && Array.isArray(res.data.subtitles)) {
-          let allSubs = [...userSubs, ...res.data.subtitles];
-          
-          // Direct SubDL Fetch (User requested specifically)
-          if (movieId && /^tt\d{7,10}$/.test(movieId)) {
-            const subdlVttUrl = `/api/subdl/vtt?imdb_id=${movieId}&type=${isSeries ? 'series' : 'movie'}`;
+        // 2. Fetch from /api/subtitles (AIO & Stremio SubDL addons)
+        try {
+          const res = await axios.get('/api/subtitles', {
+            params: {
+              id: movieId,
+              type: isSeries ? 'series' : 'movie',
+              season: 1,
+              episode: epNum
+            },
+            timeout: 8000 // Don't wait forever
+          });
+          if (res.data && Array.isArray(res.data.subtitles)) {
+            addSubsToState(res.data.subtitles);
+          }
+        } catch (e) {
+          console.warn('Failed to fetch from /api/subtitles:', e);
+        }
+
+        // 3. Direct SubDL Fetch (Custom backend ZIP extraction)
+        const idForSubDl = cleanImdbId || movieId;
+        if (idForSubDl) {
+          try {
+            const subdlVttUrl = `/api/subdl/vtt?imdb_id=${idForSubDl}&type=${isSeries ? 'series' : 'movie'}`;
             const subdlSub = {
               url: subdlVttUrl,
               lang: 'vie',
@@ -206,54 +256,38 @@ export const Player: React.FC<PlayerProps> = ({
               addon: 'SubDL API',
               id: 'subdl-direct'
             };
-            if (!allSubs.find(s => s.id === 'subdl-direct')) {
-              allSubs = [subdlSub, ...allSubs];
-            }
-          }
-
-          // 2. OpenSubtitles Integration
-          const isImdbId = movieId && /^tt\d{7,10}$/.test(movieId);
-          if (isImdbId || movieTitle) {
-            try {
-              const osRes = await axios.get('/api/opensubtitles', {
-                params: {
-                  imdb_id: isImdbId ? movieId : undefined,
-                  title: movieTitle
-                }
-              });
-              if (osRes.data && osRes.data.success && Array.isArray(osRes.data.subtitles)) {
-                const osSubs = osRes.data.subtitles.map((sub: any) => ({
-                  url: sub.url,
-                  lang: sub.lang,
-                  langName: sub.langName,
-                  addon: sub.addon,
-                  id: sub.id
-                }));
-                
-                // Add new subs without duplicates
-                osSubs.forEach((sub: any) => {
-                  if (!allSubs.find(s => s.id === sub.id)) {
-                    allSubs.push(sub);
-                  }
-                });
-              }
-            } catch (e) {
-              console.warn('OpenSubtitles direct fetch failed:', e);
-            }
-          }
-
-          setSubtitles(allSubs);
-          
-          const viSub = allSubs.find((s: any) => (s.lang || '').toLowerCase().includes('vi') || (s.lang || '').toLowerCase().includes('vie'));
-          
-          if (!activeSubtitle) {
-            if (viSub) {
-              setActiveSubtitle(viSub);
-            } else if (allSubs.length > 0) {
-              setActiveSubtitle(allSubs[0]);
-            }
+            addSubsToState([subdlSub]);
+          } catch (e) {
+            console.warn('Direct SubDL fetch failed:', e);
           }
         }
+
+        // 4. OpenSubtitles Integration
+        if (cleanImdbId || originName || movieTitle) {
+          try {
+            const osRes = await axios.get('/api/opensubtitles', {
+              params: {
+                imdb_id: cleanImdbId || undefined,
+                title: originName || movieTitle
+              },
+              timeout: 10000 // Protect against backend hang
+            });
+            if (osRes.data && osRes.data.success && Array.isArray(osRes.data.subtitles)) {
+              const osSubs = osRes.data.subtitles.map((sub: any) => ({
+                url: sub.url,
+                lang: sub.lang,
+                langName: sub.langName,
+                addon: sub.addon,
+                id: sub.id || sub.url
+              }));
+              addSubsToState(osSubs);
+            }
+          } catch (e) {
+            console.warn('OpenSubtitles direct fetch failed:', e);
+          }
+        }
+
+        if (isMounted) setIsLoadingSubtitles(false);
       } catch (err) {
         console.error('Failed to fetch subtitles:', err);
       } finally {
@@ -265,7 +299,7 @@ export const Player: React.FC<PlayerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [stream, currentEpisodeIdx]);
+  }, [stream, currentEpisodeIdx, movieTitle, originName]);
 
   // Load and parse VTT cues when activeSubtitle changes
   useEffect(() => {

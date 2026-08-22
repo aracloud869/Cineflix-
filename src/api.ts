@@ -623,6 +623,7 @@ export async function fetchMeta(id: string): Promise<MetaDetailResponse> {
       const episodes = item.data?.episodes || [];
       if (movie) {
         if (!mergedMeta.name || mergedMeta.name === id) mergedMeta.name = movie.name;
+        if (!mergedMeta.originName && movie.origin_name) mergedMeta.originName = movie.origin_name;
         if (!mergedMeta.poster && movie.poster_url) mergedMeta.poster = normalizeImageUrl(movie.poster_url);
         if (!mergedMeta.background && movie.thumb_url) mergedMeta.background = normalizeImageUrl(movie.thumb_url);
         if (!mergedMeta.description && movie.content) mergedMeta.description = movie.content;
@@ -641,6 +642,7 @@ export async function fetchMeta(id: string): Promise<MetaDetailResponse> {
       const itemData = item.data?.data?.item;
       if (itemData) {
         if (!mergedMeta.name || mergedMeta.name === id) mergedMeta.name = itemData.name;
+        if (!mergedMeta.originName && itemData.origin_name) mergedMeta.originName = itemData.origin_name;
         if (!mergedMeta.poster && itemData.poster_url) mergedMeta.poster = normalizeImageUrl(itemData.poster_url);
         if (!mergedMeta.background && itemData.thumb_url) mergedMeta.background = normalizeImageUrl(itemData.thumb_url);
         if (!mergedMeta.description && itemData.content) mergedMeta.description = itemData.content;
@@ -659,6 +661,7 @@ export async function fetchMeta(id: string): Promise<MetaDetailResponse> {
       const film = item.data?.movie;
       if (film) {
         if (!mergedMeta.name || mergedMeta.name === id) mergedMeta.name = film.name;
+        if (!mergedMeta.originName && film.origin_name) mergedMeta.originName = film.origin_name;
         if (!mergedMeta.poster && film.poster_url) mergedMeta.poster = normalizeImageUrl(film.poster_url);
         if (!mergedMeta.background && film.thumb_url) mergedMeta.background = normalizeImageUrl(film.thumb_url);
         if (!mergedMeta.description && film.description) mergedMeta.description = film.description;

@@ -403,6 +403,7 @@ export function MovieDetails() {
                 onNextEpisode={handleNextEpisode}
                 hasNextEpisode={selectedEpisodeIdx < episodes.length - 1}
                 movieTitle={primaryMeta.name}
+                originName={primaryMeta.originName}
                 episodeTitle={currentEpisode?.title}
                 episodes={episodes}
                 currentEpisodeIdx={selectedEpisodeIdx}
@@ -551,10 +552,10 @@ export function MovieDetails() {
           )}
 
           {/* Navigation Tabs */}
-          <div className="flex gap-8 border-b border-white/10 mt-6 mb-6 font-bold text-sm">
+          <div className="flex gap-6 sm:gap-8 border-b border-white/10 mt-6 mb-6 font-bold text-sm overflow-x-auto whitespace-nowrap scrollbar-none scroll-smooth [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
             <button 
               onClick={() => setActiveTab('episodes')}
-              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors ${
+              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors shrink-0 ${
                 activeTab === 'episodes' ? 'border-[#E50914] text-[#E50914]' : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
@@ -564,7 +565,7 @@ export function MovieDetails() {
 
             <button 
               onClick={() => setActiveTab('info')}
-              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors ${
+              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors shrink-0 ${
                 activeTab === 'info' ? 'border-[#E50914] text-[#E50914]' : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
@@ -574,7 +575,7 @@ export function MovieDetails() {
 
             <button 
               onClick={() => setActiveTab('recommendations')}
-              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors ${
+              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors shrink-0 ${
                 activeTab === 'recommendations' ? 'border-[#E50914] text-[#E50914]' : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
@@ -583,7 +584,7 @@ export function MovieDetails() {
             </button>
             <button
               onClick={() => setActiveTab('comments')}
-              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors ${
+              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors shrink-0 ${
                 activeTab === 'comments' ? 'border-[#E50914] text-[#E50914]' : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >
@@ -592,7 +593,7 @@ export function MovieDetails() {
             </button>
             <button
               onClick={() => setActiveTab('subtitles')}
-              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors ${
+              className={`pb-3 border-b-2 flex items-center gap-2 transition-colors shrink-0 ${
                 activeTab === 'subtitles' ? 'border-[#E50914] text-[#E50914]' : 'border-transparent text-gray-400 hover:text-white'
               }`}
             >

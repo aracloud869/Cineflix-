@@ -17,6 +17,7 @@ export interface MetaPreview {
   id: string;
   type: string;
   name: string;
+  originName?: string;
   poster: string;
   posterShape?: string;
   background?: string;
