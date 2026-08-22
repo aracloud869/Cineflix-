@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { searchUnifiedMovies, fetchUnifiedCatalog } from '../api';
@@ -8,6 +8,7 @@ import { Search as SearchIcon, Film, Sparkles, TrendingUp, X, Server, ArrowLeft,
 export function Search() {
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get('q') || '';
+  const deferredQuery = useDeferredValue(query);
   const [localQuery, setLocalQuery] = useState(query);
   const [selectedServer, setSelectedServer] = useState<string>('ALL');
   const navigate = useNavigate();
@@ -17,9 +18,9 @@ export function Search() {
   }, [query]);
 
   const { data: movies = [], isLoading } = useQuery({
-    queryKey: ['search', query],
-    queryFn: () => searchUnifiedMovies(query),
-    enabled: !!query,
+    queryKey: ['search', deferredQuery],
+    queryFn: () => searchUnifiedMovies(deferredQuery),
+    enabled: !!deferredQuery,
   });
 
   const { data: catalog = [] } = useQuery({
@@ -179,9 +180,10 @@ export function Search() {
 
       {/* Loading state */}
       {isLoading ? (
-        <div className="flex flex-col items-center justify-center py-20">
-          <div className="w-12 h-12 border-4 border-[#E50914] border-t-transparent rounded-full animate-spin mb-4" />
-          <p className="text-gray-400 text-sm animate-pulse">Đang tìm kiếm phim từ tất cả các server...</p>
+        <div className="max-w-7xl mx-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6">
+          {[...Array(12)].map((_, i) => (
+            <div key={i} className="w-full aspect-[2/3] rounded-xl bg-white/5 animate-pulse" />
+          ))}
         </div>
       ) : query && filteredMovies.length > 0 ? (
         <div className="max-w-7xl mx-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6">

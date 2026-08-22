@@ -14,6 +14,63 @@ import { UnifiedMovie } from '../types';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { detectMovieType, detectAudioInfo, detectQualityInfo } from '../utils';
 
+const MovieRow = React.memo(({ title, list, icon: RowIcon, viewAllPath }: { title: string; list: UnifiedMovie[]; icon?: any; viewAllPath?: string }) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const scroll = (direction: 'left' | 'right') => {
+    if (scrollRef.current) {
+      const offset = direction === 'left' ? -400 : 400;
+      scrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
+    }
+  };
+
+  if (!list || list.length === 0) return null;
+
+  return (
+    <div className="py-4 sm:py-6 group/row relative transform-gpu">
+      <div className="flex items-center justify-between px-4 sm:px-8 lg:px-12 mb-3">
+        <div className="flex items-center gap-2.5">
+          {RowIcon && <RowIcon className="w-5 h-5 text-[#E50914]" />}
+          <h2 className="text-lg sm:text-2xl font-extrabold text-white tracking-tight">
+            {title}
+          </h2>
+        </div>
+        {viewAllPath && (
+          <Link to={viewAllPath} className="text-xs text-gray-400 font-semibold cursor-pointer hover:text-white transition-colors">
+            Xem tất cả →
+          </Link>
+        )}
+      </div>
+
+      <button
+        onClick={() => scroll('left')}
+        className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
+      >
+        <ChevronLeft className="w-6 h-6" />
+      </button>
+
+      <div
+        ref={scrollRef}
+        className="flex gap-3 sm:gap-4 overflow-x-auto px-4 sm:px-8 lg:px-12 pb-4 scrollbar-hide snap-x snap-mandatory"
+        style={{ scrollbarWidth: 'none' }}
+      >
+        {list.map((movie) => (
+          <div key={movie.id} className="snap-start shrink-0">
+            <MovieCard movie={movie} />
+          </div>
+        ))}
+      </div>
+
+      <button
+        onClick={() => scroll('right')}
+        className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
+      >
+        <ChevronRight className="w-6 h-6" />
+      </button>
+    </div>
+  );
+});
+
 export function Home() {
   const [searchParams, setSearchParams] = useSearchParams();
   const category = searchParams.get('category');
@@ -107,79 +164,35 @@ export function Home() {
     return list;
   }, [watchedMovies]);
 
-  const MovieRow = ({ title, list, icon: RowIcon, viewAllPath }: { title: string; list: UnifiedMovie[]; icon?: any; viewAllPath?: string }) => {
-    const scrollRef = useRef<HTMLDivElement>(null);
-
-    const scroll = (direction: 'left' | 'right') => {
-      if (scrollRef.current) {
-        const offset = direction === 'left' ? -400 : 400;
-        scrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
-      }
-    };
-
-    if (!list || list.length === 0) return null;
-
-    return (
-      <div className="py-4 sm:py-6 group/row relative">
-        <div className="flex items-center justify-between px-4 sm:px-8 lg:px-12 mb-3">
-          <div className="flex items-center gap-2.5">
-            {RowIcon && <RowIcon className="w-5 h-5 text-[#E50914]" />}
-            <h2 className="text-lg sm:text-2xl font-extrabold text-white tracking-tight">
-              {title}
-            </h2>
-          </div>
-          {viewAllPath && (
-            <Link to={viewAllPath} className="text-xs text-gray-400 font-semibold cursor-pointer hover:text-white transition-colors">
-              Xem tất cả →
-            </Link>
-          )}
-        </div>
-
-        <button
-          onClick={() => scroll('left')}
-          className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-
-        <div
-          ref={scrollRef}
-          className="flex gap-3 sm:gap-4 overflow-x-auto px-4 sm:px-8 lg:px-12 pb-4 scrollbar-hide snap-x snap-mandatory"
-          style={{ scrollbarWidth: 'none' }}
-        >
-          {list.map((movie) => (
-            <div key={movie.id} className="snap-start shrink-0">
-              <MovieCard movie={movie} />
-            </div>
-          ))}
-        </div>
-
-        <button
-          onClick={() => scroll('right')}
-          className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
-        >
-          <ChevronRight className="w-6 h-6" />
-        </button>
-      </div>
-    );
-  };
-
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#0a0b10] pb-24 overflow-x-hidden pt-24">
-        <div className="w-full h-[60vh] bg-white/5 animate-pulse mb-8" />
-        <div className="space-y-8 px-4 sm:px-12">
-          {[...Array(3)].map((_, i) => (
-            <div key={i}>
-              <div className="w-48 h-6 bg-white/10 rounded mb-4 animate-pulse" />
-              <div className="flex gap-4 overflow-hidden">
-                {[...Array(6)].map((_, j) => (
-                  <div key={j} className="w-36 sm:w-48 aspect-[2/3] rounded-xl shrink-0 bg-white/5 animate-pulse" />
-                ))}
-              </div>
+        {!isCustomView ? (
+          <>
+            <div className="w-full h-[60vh] bg-white/5 animate-pulse mb-8" />
+            <div className="space-y-8 px-4 sm:px-12">
+              {[...Array(3)].map((_, i) => (
+                <div key={i}>
+                  <div className="w-48 h-6 bg-white/10 rounded mb-4 animate-pulse" />
+                  <div className="flex gap-4 overflow-hidden">
+                    {[...Array(6)].map((_, j) => (
+                      <div key={j} className="w-36 sm:w-48 aspect-[2/3] rounded-xl shrink-0 bg-white/5 animate-pulse" />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        ) : (
+          <div className="px-4 sm:px-8 lg:px-12 mt-8">
+            <div className="w-64 h-8 bg-white/10 rounded mb-8 animate-pulse" />
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6">
+              {[...Array(12)].map((_, i) => (
+                <div key={i} className="w-full aspect-[2/3] rounded-xl bg-white/5 animate-pulse" />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -279,7 +292,7 @@ export function Home() {
               </Link>
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6 transform-gpu">
               {filtered.map((movie) => (
                 <div key={movie.id} className="flex justify-center">
                   <MovieCard movie={movie} />

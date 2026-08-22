@@ -10,9 +10,9 @@ interface MovieCardProps {
   priority?: boolean;
 }
 
-export const MovieCard: React.FC<MovieCardProps> = ({ movie }) => {
+export const MovieCard = React.memo(({ movie }: MovieCardProps) => {
   const [favorites, setFavorites] = useLocalStorage<string[]>('cineflix-favorites', []);
-  const isFavorite = Array.isArray(favorites) && favorites.includes(movie.id);
+  const isFavorite = useMemo(() => Array.isArray(favorites) && favorites.includes(movie.id), [favorites, movie.id]);
 
   // Candidate images across multiple sources
   const candidateImages = useMemo(() => getPosterFallbackList(movie), [movie]);
@@ -45,10 +45,10 @@ export const MovieCard: React.FC<MovieCardProps> = ({ movie }) => {
   };
 
   return (
-    <div className="shrink-0 w-36 sm:w-44 md:w-48 lg:w-52 gpu-accelerate">
+    <div className="shrink-0 w-36 sm:w-44 md:w-48 lg:w-52 will-change-transform">
       <Link 
         to={`/movie/${encodeURIComponent(movie.id)}`}
-        className="group relative flex flex-col rounded-xl overflow-hidden bg-[#181820] border border-white/5 hover:border-red-600/40 transition-all duration-300 hover:scale-[1.03] hover:shadow-[0_12px_28px_rgba(0,0,0,0.8),0_0_20px_rgba(229,9,20,0.2)] z-10 hover:z-20 w-full"
+        className="group relative flex flex-col rounded-xl overflow-hidden bg-[#181820] border border-white/5 hover:border-red-600/40 transition-all duration-300 hover:scale-[1.03] hover:shadow-[0_12px_28px_rgba(0,0,0,0.8),0_0_20px_rgba(229,9,20,0.2)] z-10 hover:z-20 w-full transform-gpu"
       >
         {/* Poster Image Container */}
         <div className="relative aspect-[2/3] w-full overflow-hidden bg-[#12131a]">
@@ -179,4 +179,4 @@ export const MovieCard: React.FC<MovieCardProps> = ({ movie }) => {
       </Link>
     </div>
   );
-};
+});

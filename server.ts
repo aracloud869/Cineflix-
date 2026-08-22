@@ -33,14 +33,19 @@ class SimpleMemoryCache<T> {
 }
 
 // Helper to make axios requests with retry on 429 (rate limiting)
-async function axiosGetWithRetry(url: string, config: any = {}, retries = 3, delay = 1000): Promise<any> {
+async function axiosGetWithRetry(url: string, config: any = {}, retries = 5, delay = 2000): Promise<any> {
   try {
     return await axios.get(url, config);
   } catch (error: any) {
     const status = error.response ? error.response.status : null;
-    if (status === 429 && retries > 0) {
-      console.warn(`[Axios Retry] Hit 429 on ${url}. Retrying in ${delay}ms... (${retries} retries left)`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+    // Retry on 429 (Rate Limit) or 503 (Service Unavailable)
+    if ((status === 429 || status === 503) && retries > 0) {
+      // Add jitter to delay: delay +/- 20%
+      const jitter = delay * 0.2 * (Math.random() * 2 - 1);
+      const finalDelay = delay + jitter;
+      
+      console.warn(`[Axios Retry] Hit ${status} on ${url}. Retrying in ${Math.round(finalDelay)}ms... (${retries} retries left)`);
+      await new Promise(resolve => setTimeout(resolve, finalDelay));
       return axiosGetWithRetry(url, config, retries - 1, delay * 2);
     }
     throw error;
@@ -648,14 +653,14 @@ app.get("/api/subtitles", async (req, res) => {
 
       const SUBDL_API_KEY = "subdl_B_aIO1H-jyorIqf4B-DtIA5OUE1EBuapUlJebKMc27g";
       try {
-        const searchRes = await axios.get(`https://api.subdl.com/api/v1/subtitles`, {
+        const searchRes = await axiosGetWithRetry(`https://api.subdl.com/api/v1/subtitles`, {
           params: {
             api_key: SUBDL_API_KEY,
             imdb_id: resolvedImdbId,
             languages: "vi,en",
             type: type === 'series' ? 'tv' : 'movie'
           },
-          timeout: 4000
+          timeout: 6000
         });
 
         if (searchRes.data && searchRes.data.status !== false && Array.isArray(searchRes.data.subtitles)) {
