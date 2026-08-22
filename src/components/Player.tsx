@@ -84,6 +84,46 @@ export const Player: React.FC<PlayerProps> = ({
   const [playerMode, setPlayerMode] = useState<'auto' | 'embed' | 'native'>('auto');
   const [retryCount, setRetryCount] = useState(0);
 
+  // Resume Progress Keys
+  const resumeKey = useMemo(() => {
+    if (!propMovieId) return null;
+    return `resume_${propMovieId}_${currentEpisodeIdx}`;
+  }, [propMovieId, currentEpisodeIdx]);
+
+  // Handle Resuming Time
+  const hasResumedRef = useRef(false);
+  useEffect(() => {
+    hasResumedRef.current = false;
+  }, [resumeKey]);
+
+  useEffect(() => {
+    if (resumeKey && videoRef.current && duration > 0 && !hasResumedRef.current) {
+      const savedTime = localStorage.getItem(resumeKey);
+      if (savedTime) {
+        const time = parseFloat(savedTime);
+        if (time > 10 && time < duration - 10) {
+          videoRef.current.currentTime = time;
+          setCurrentTime(time);
+          console.log(`[Player] Resumed to ${time}s`);
+        }
+      }
+      hasResumedRef.current = true;
+    }
+  }, [resumeKey, duration]);
+
+  // Periodic Save Progress
+  useEffect(() => {
+    if (!isPlaying || !resumeKey || currentTime <= 10) return;
+
+    const interval = setInterval(() => {
+      if (currentTime > 10 && duration > 0 && currentTime < duration - 10) {
+        localStorage.setItem(resumeKey, currentTime.toString());
+      }
+    }, 10000); // Save every 10s
+
+    return () => clearInterval(interval);
+  }, [isPlaying, resumeKey, currentTime, duration]);
+
   // Auto audio preference (Lồng tiếng, Vietsub, Thuyết minh)
   const [autoAudioPref, setAutoAudioPref] = useState<'all' | 'long-tieng' | 'vietsub' | 'thuyet-minh'>(() => {
     return (localStorage.getItem('auto_audio_pref') as any) || 'all';
@@ -996,6 +1036,11 @@ export const Player: React.FC<PlayerProps> = ({
     if (!video) return;
     setCurrentTime(video.currentTime);
     setDuration(video.duration || 0);
+
+    // Occasional save on important updates
+    if (resumeKey && video.currentTime > 0 && Math.floor(video.currentTime) % 30 === 0) {
+      localStorage.setItem(resumeKey, video.currentTime.toString());
+    }
 
     if (video.buffered.length > 0) {
       const bufferedEnd = video.buffered.end(video.buffered.length - 1);

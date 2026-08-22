@@ -364,7 +364,6 @@ export function detectStreamType(url?: string): 'mp4' | 'hls' | 'embed' {
     lower.includes('/player') || 
     lower.includes('abyss') || 
     lower.includes('sieutam') || 
-    lower.includes('streamc') ||
     lower.includes('short.ink') ||
     lower.includes('streamsilk') ||
     lower.includes('vidsrc') ||

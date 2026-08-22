@@ -276,6 +276,8 @@ export function MovieDetails() {
   // Record into watch history
   useEffect(() => {
     if (primaryMeta && primaryMeta.name && id) {
+      if (primaryMeta.name === 'Chi Tiết Phim' || primaryMeta.name?.toLowerCase() === 'chi tiết phim') return;
+
       const currentHist = Array.isArray(history) ? history : [];
       const newItem = {
         movieId: id,

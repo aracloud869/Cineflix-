@@ -32,14 +32,37 @@ class SimpleMemoryCache<T> {
   }
 }
 
-const subdlExtractCache = new SimpleMemoryCache<string>(60 * 60 * 1000); // 1 hour ZIP extraction cache
-const subtitleProxyCache = new SimpleMemoryCache<string>(60 * 60 * 1000); // 1 hour proxy download cache
-const searchResultsCache = new SimpleMemoryCache<any[]>(5 * 60 * 1000);   // 5 minutes subtitle search results cache
+// Helper to make axios requests with retry on 429 (rate limiting)
+async function axiosGetWithRetry(url: string, config: any = {}, retries = 3, delay = 1000): Promise<any> {
+  try {
+    return await axios.get(url, config);
+  } catch (error: any) {
+    const status = error.response ? error.response.status : null;
+    if (status === 429 && retries > 0) {
+      console.warn(`[Axios Retry] Hit 429 on ${url}. Retrying in ${delay}ms... (${retries} retries left)`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+      return axiosGetWithRetry(url, config, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+}
+
+const subdlExtractCache = new SimpleMemoryCache<string>(7 * 24 * 60 * 60 * 1000); // 7 days ZIP extraction cache
+const subtitleProxyCache = new SimpleMemoryCache<string>(7 * 24 * 60 * 60 * 1000); // 7 days proxy download cache
+const searchResultsCache = new SimpleMemoryCache<any[]>(12 * 60 * 60 * 1000);   // 12 hours subtitle search results cache
 
 const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+function removeVietnameseAccents(str: string): string {
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D');
+}
 
 // Helper to resolve IMDb ID from TMDB search
 async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
@@ -50,7 +73,7 @@ async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = '
     try {
       console.log(`[TMDB Resolver] Searching TMDB (${sType}) for title: "${title}"`);
       // 1. Search with Vietnamese or English locale
-      const searchRes = await axios.get(`https://api.themoviedb.org/3/search/${sType}`, {
+      let searchRes = await axios.get(`https://api.themoviedb.org/3/search/${sType}`, {
         params: {
           api_key: apiKey,
           query: title,
@@ -67,6 +90,21 @@ async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = '
           }
         });
         results = enSearchRes.data?.results || [];
+      }
+
+      // Fallback search: remove accents for better mapping
+      if (results.length === 0) {
+        const cleanTitle = removeVietnameseAccents(title);
+        if (cleanTitle !== title) {
+          console.log(`[TMDB Resolver] Fallback search without accents: "${cleanTitle}"`);
+          const accentFreeRes = await axios.get(`https://api.themoviedb.org/3/search/${sType}`, {
+            params: {
+              api_key: apiKey,
+              query: cleanTitle
+            }
+          });
+          results = accentFreeRes.data?.results || [];
+        }
       }
 
       if (results.length > 0) {
@@ -136,7 +174,7 @@ app.get("/api/subdl/search", async (req, res) => {
   }
 
   try {
-    const searchRes = await axios.get(`https://api.subdl.com/api/v1/subtitles`, {
+    const searchRes = await axiosGetWithRetry(`https://api.subdl.com/api/v1/subtitles`, {
       params: {
         api_key: SUBDL_API_KEY,
         imdb_id: resolvedImdbId,
@@ -192,7 +230,7 @@ app.get("/api/subdl/extract", async (req, res) => {
     const downloadUrl = `https://dl.subdl.com${url}`;
 
     // Download ZIP
-    const zipResponse = await axios.get(downloadUrl, {
+    const zipResponse = await axiosGetWithRetry(downloadUrl, {
       responseType: 'arraybuffer',
       timeout: 20000,
       headers: {
@@ -204,9 +242,16 @@ app.get("/api/subdl/extract", async (req, res) => {
     const zip = new AdmZip(Buffer.from(zipResponse.data));
     const zipEntries = zip.getEntries();
     
-    // Find first .srt or .vtt file
-    let srtEntry = zipEntries.find(entry => entry.entryName.toLowerCase().endsWith('.srt'));
-    let vttEntry = zipEntries.find(entry => entry.entryName.toLowerCase().endsWith('.vtt'));
+    // Find .srt or .vtt file, prioritizing Vietnamese subtitles if present in the ZIP archive
+    let srtEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.srt') && (entry.entryName.toLowerCase().includes('viet') || entry.entryName.toLowerCase().includes('vi-')));
+    if (!srtEntry) {
+      srtEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.srt'));
+    }
+
+    let vttEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.vtt') && (entry.entryName.toLowerCase().includes('viet') || entry.entryName.toLowerCase().includes('vi-')));
+    if (!vttEntry) {
+      vttEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.vtt'));
+    }
     
     if (!srtEntry && !vttEntry) {
        return res.status(404).json({ error: "No SRT or VTT file found in ZIP archive" });
@@ -233,6 +278,12 @@ app.get("/api/subdl/extract", async (req, res) => {
   } catch (error: any) {
     console.error('SubDL extract error:', error.message);
     const status = error.response ? error.response.status : 500;
+    if (status === 429) {
+      const fallbackVtt = "WEBVTT\n\n00:00:00.000 --> 00:00:10.000\n[Hệ thống tải phụ đề đang quá tải, vui lòng tải lại trang hoặc thử lại sau vài giây]\n";
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(fallbackVtt);
+    }
     res.status(status).json({ error: "Failed to process subtitles from SubDL", details: error.message });
   }
 });
@@ -374,8 +425,8 @@ function srtToVtt(srt: string): string {
       text = text.replace('WEBVTT\n', 'WEBVTT\n\n');
     }
   } else {
-    // Convert timestamps: 00:00:00,000 -> 00:00:00.000
-    text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+    // Convert timestamps: Supporting single/double-digit hours, and comma/dot milliseconds
+    text = text.replace(/(\d{1,2}:\d{2}:\d{2})[,.](\d{1,3})/g, '$1.$2');
     text = 'WEBVTT\n\n' + text;
   }
   
@@ -733,8 +784,8 @@ app.get("/api/subtitles", async (req, res) => {
 
 // Proxy subtitle file to parse SRT to VTT and bypass CORS
 app.get("/api/subtitles/proxy", async (req, res) => {
+  const subtitleUrl = req.query.url as string;
   try {
-    const subtitleUrl = req.query.url as string;
     if (!subtitleUrl || !subtitleUrl.startsWith('http')) {
       return res.status(400).send('Invalid or missing subtitle url');
     }
@@ -754,7 +805,7 @@ app.get("/api/subtitles/proxy", async (req, res) => {
       // Ignore
     }
 
-    const response = await axios.get(subtitleUrl, {
+    const response = await axiosGetWithRetry(subtitleUrl, {
       responseType: 'text',
       timeout: 8000,
       headers: {
@@ -781,8 +832,16 @@ app.get("/api/subtitles/proxy", async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(vttContent);
   } catch (error: any) {
+    const status = error.response ? error.response.status : 500;
+    if (status === 429) {
+      console.warn(`[Subtitle Proxy] 429 Rate Limit for: ${subtitleUrl}`);
+      const fallbackVtt = "WEBVTT\n\n00:00:00.000 --> 00:00:10.000\n[Hệ thống tải phụ đề đang quá tải, vui lòng tải lại trang hoặc thử lại sau vài giây]\n";
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(fallbackVtt);
+    }
     console.error('Error proxying subtitle:', error.message);
-    res.status(500).send(`Failed to fetch subtitle file: ${error.message}`);
+    res.status(status).send(`Failed to fetch subtitle file: ${error.message}`);
   }
 });
 
@@ -827,6 +886,42 @@ app.get("/api/ophim/meta/:slug", async (req, res) => {
   }
 });
 
+// NguonC Proxy endpoints
+app.get("/api/nguonc/film/:slug", async (req, res) => {
+  const { slug } = req.params;
+  try {
+    const response = await axios.get(`https://phim.nguonc.com/api/film/${encodeURIComponent(slug)}`, {
+      timeout: 8000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    res.json(response.data);
+  } catch (error: any) {
+    const status = error.response ? error.response.status : 500;
+    if (status === 404) {
+      console.log(`[NguonC Proxy] Film "${slug}" not found on NguonC (404)`);
+      return res.status(404).json({ error: 'Film not found on NguonC', status: false });
+    }
+    console.error(`Error fetching NguonC film "${slug}":`, error.message);
+    res.status(status).json({ error: 'Failed to fetch film details', details: error.message });
+  }
+});
+
+app.get("/api/nguonc/films/*", async (req, res) => {
+  try {
+    const subPath = req.params[0];
+    const queryStr = new URLSearchParams(req.query as any).toString();
+    const url = `https://phim.nguonc.com/api/films/${subPath}${queryStr ? '?' + queryStr : ''}`;
+    const response = await axios.get(url, {
+      timeout: 8000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    res.json(response.data);
+  } catch (error: any) {
+    console.error('Error fetching NguonC films subpath:', error.message);
+    res.status(500).json({ error: 'Failed to fetch catalog' });
+  }
+});
+
 // TMDB and OMDb Proxy endpoints
 app.get("/api/tmdb/search", async (req, res) => {
   try {
@@ -855,6 +950,82 @@ app.get("/api/omdb/search", async (req, res) => {
     res.json(response.data);
   } catch (error) {
     res.status(500).json({ error: 'Failed to search OMDb' });
+  }
+});
+
+// HLS m3u8 and segment CORS bypass proxy for NguonC / OPStream
+app.get("/api/m3u8-proxy", async (req, res) => {
+  const targetUrl = req.query.url as string;
+  if (!targetUrl || !targetUrl.startsWith('http')) {
+    return res.status(400).send('Invalid url parameter');
+  }
+
+  try {
+    const isM3u8 = targetUrl.toLowerCase().split('?')[0].endsWith('.m3u8') || targetUrl.includes('m3u8');
+
+    if (isM3u8) {
+      const response = await axios.get(targetUrl, {
+        responseType: 'text',
+        headers: {
+          'Referer': 'https://phim.nguonc.com',
+          'Origin': 'https://phim.nguonc.com',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        timeout: 10000
+      });
+
+      const playlistText = response.data;
+      const lines = playlistText.split('\n');
+      const rewrittenLines = lines.map((line: string) => {
+        const trimmed = line.trim();
+        if (trimmed === '') return line;
+
+        if (trimmed.startsWith('#')) {
+          return trimmed.replace(/URI="([^"]+)"/g, (match, p1) => {
+            try {
+              const absolute = new URL(p1, targetUrl).href;
+              return `URI="/api/m3u8-proxy?url=${encodeURIComponent(absolute)}"`;
+            } catch (e) {
+              return match;
+            }
+          });
+        }
+
+        try {
+          const absoluteUrl = new URL(trimmed, targetUrl).href;
+          return `/api/m3u8-proxy?url=${encodeURIComponent(absoluteUrl)}`;
+        } catch (e) {
+          return line;
+        }
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(rewrittenLines.join('\n'));
+    } else {
+      // Binary stream for TS segment or encryption key
+      const response = await axios.get(targetUrl, {
+        responseType: 'stream',
+        headers: {
+          'Referer': 'https://phim.nguonc.com',
+          'Origin': 'https://phim.nguonc.com',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
+        timeout: 15000
+      });
+
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      if (response.headers['content-type']) {
+        res.setHeader('Content-Type', String(response.headers['content-type']));
+      }
+      if (response.headers['content-length']) {
+        res.setHeader('Content-Length', String(response.headers['content-length']));
+      }
+      response.data.pipe(res);
+    }
+  } catch (error: any) {
+    console.error(`[m3u8 Proxy Error] url: ${targetUrl}, msg: ${error.message}`);
+    res.status(500).send(`Failed to proxy media segment: ${error.message}`);
   }
 });
 

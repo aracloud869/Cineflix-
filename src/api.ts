@@ -270,7 +270,7 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
           .catch(() => [])
       );
       apiPromises.push(
-        axios.get(`https://phim.nguonc.com/api/films/phim-bo?page=${page}`, { timeout: 6000 })
+        axios.get(`/api/nguonc/films/phim-bo?page=${page}`, { timeout: 6000 })
           .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'series', 'nguonc')))
           .catch(() => [])
       );
@@ -300,7 +300,7 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
           .catch(() => [])
       );
       apiPromises.push(
-        axios.get(`https://phim.nguonc.com/api/films/phim-le?page=${page}`, { timeout: 6000 })
+        axios.get(`/api/nguonc/films/phim-le?page=${page}`, { timeout: 6000 })
           .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'nguonc')))
           .catch(() => [])
       );
@@ -329,7 +329,7 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
           .catch(() => [])
       );
       apiPromises.push(
-        axios.get(`https://phim.nguonc.com/api/films/the-loai/hoat-hinh?page=${page}`, { timeout: 6000 })
+        axios.get(`/api/nguonc/films/the-loai/hoat-hinh?page=${page}`, { timeout: 6000 })
           .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'anime', 'nguonc')))
           .catch(() => [])
       );
@@ -359,7 +359,7 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
           .catch(() => [])
       );
       apiPromises.push(
-        axios.get(`https://phim.nguonc.com/api/films/tv-shows?page=${page}`, { timeout: 6000 })
+        axios.get(`/api/nguonc/films/tv-shows?page=${page}`, { timeout: 6000 })
           .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'series', 'nguonc')))
           .catch(() => [])
       );
@@ -376,7 +376,7 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
           .catch(() => [])
       );
       apiPromises.push(
-        axios.get(`https://phim.nguonc.com/api/films/phim-moi-cap-nhat?page=${page}`, { timeout: 6000 })
+        axios.get(`/api/nguonc/films/phim-moi-cap-nhat?page=${page}`, { timeout: 6000 })
           .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'nguonc')))
           .catch(() => [])
       );
@@ -392,7 +392,7 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
       axios.get(`https://phimapi.com/v1/api/the-loai/${genre}?page=${page}&limit=36`, { timeout: 6000 })
         .then(res => (res.data?.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'kkphim')))
         .catch(() => []),
-      axios.get(`https://phim.nguonc.com/api/films/the-loai/${genre}?page=${page}`, { timeout: 6000 })
+      axios.get(`/api/nguonc/films/the-loai/${genre}?page=${page}`, { timeout: 6000 })
         .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'nguonc')))
         .catch(() => [])
     ];
@@ -406,7 +406,7 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
       axios.get(`https://phimapi.com/v1/api/quoc-gia/${country}?page=${page}&limit=36`, { timeout: 6000 })
         .then(res => (res.data?.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'kkphim')))
         .catch(() => []),
-      axios.get(`https://phim.nguonc.com/api/films/quoc-gia/${country}?page=${page}`, { timeout: 6000 })
+      axios.get(`/api/nguonc/films/quoc-gia/${country}?page=${page}`, { timeout: 6000 })
         .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'nguonc')))
         .catch(() => [])
     ];
@@ -454,7 +454,7 @@ export async function searchUnifiedMovies(query: string): Promise<UnifiedMovie[]
       }))
       .catch(() => ({ sourceId: 'kkphim-search', metas: [] })),
     // 3. Search NguonC live API
-    axios.get(`https://phim.nguonc.com/api/films/search?keyword=${encodeURIComponent(cleanQ)}`, { timeout: 6000 })
+    axios.get(`/api/nguonc/films/search?keyword=${encodeURIComponent(cleanQ)}`, { timeout: 6000 })
       .then(res => ({
         sourceId: 'nguonc-search',
         metas: (res.data?.items || []).map((it: any) => ({
@@ -574,7 +574,7 @@ export async function fetchMeta(id: string): Promise<MetaDetailResponse> {
     );
     // NguonC
     liveApiPromises.push(
-      axios.get(`https://phim.nguonc.com/api/film/${encodeURIComponent(slug)}`, { timeout: 6000 })
+      axios.get(`/api/nguonc/film/${encodeURIComponent(slug)}`, { timeout: 6000 })
         .then(res => ({ source: 'nguonc', data: res.data }))
         .catch(() => null)
     );
@@ -701,12 +701,18 @@ export async function fetchStreams(id: string): Promise<StreamResponse> {
     // Check if embed url has direct media inside
     const directMedia = extractDirectMediaUrl(rawUrl);
     const effectiveType = directMedia ? (directMedia.includes('.mp4') ? 'mp4' : 'hls') : detectStreamType(rawUrl);
-    const finalUrl = directMedia || (effectiveType !== 'embed' ? rawUrl : '');
+    let finalUrl = directMedia || (effectiveType !== 'embed' ? rawUrl : '');
     const sName = mapSourceName(stream.name || stream.sourceName || 'Server VIP', stream.title || stream.name);
 
     if (seenUrls.has(rawUrl) || (finalUrl && seenUrls.has(finalUrl))) return;
     seenUrls.add(rawUrl);
     if (finalUrl) seenUrls.add(finalUrl);
+
+    // Proxy HLS NguonC / OPStream URLs to bypass CORS & Referer blocks
+    if (finalUrl && (effectiveType === 'hls' || finalUrl.toLowerCase().includes('.m3u8')) && 
+        (finalUrl.includes('nguonc') || finalUrl.includes('opstream') || sName.toLowerCase().includes('nguonc'))) {
+      finalUrl = `/api/m3u8-proxy?url=${encodeURIComponent(finalUrl)}`;
+    }
 
     streams.push({
       ...stream,
@@ -851,7 +857,7 @@ export async function fetchStreams(id: string): Promise<StreamResponse> {
 
     // NguonC
     livePromises.push(
-      axios.get(`https://phim.nguonc.com/api/film/${encodeURIComponent(currentSlug)}`, { timeout: 6000 })
+      axios.get(`/api/nguonc/film/${encodeURIComponent(currentSlug)}`, { timeout: 6000 })
         .then(res => {
           const episodes = res.data?.movie?.episodes || [];
           const foundStreams: Stream[] = [];
@@ -865,22 +871,25 @@ export async function fetchStreams(id: string): Promise<StreamResponse> {
 
             if (epData) {
               const sName = mapSourceName('NguonC ' + serverName, epData.name || '');
-              if (epData.m3u8) {
+              const m3u8Url = epData.link_m3u8 || epData.m3u8;
+              const embedUrl = epData.link_embed || epData.embed;
+
+              if (m3u8Url) {
                 foundStreams.push({
                   name: sName,
                   title: `⚡ ${sName} - Tập ${epData.name || epNum}\n(HLS Tuyến 2)`,
-                  url: cleanMediaUrl(epData.m3u8),
+                  url: cleanMediaUrl(m3u8Url),
                   serverType: 'hls',
                   sourceName: sName
                 });
               }
-              if (epData.embed) {
+              if (embedUrl) {
                 foundStreams.push({
                   name: `${sName} (Embed)`,
                   title: `🎬 ${sName} Embed - Tập ${epData.name || epNum}`,
-                  url: cleanMediaUrl(epData.embed),
-                  externalUrl: cleanMediaUrl(epData.embed),
-                  embedUrl: cleanMediaUrl(epData.embed),
+                  url: cleanMediaUrl(embedUrl),
+                  externalUrl: cleanMediaUrl(embedUrl),
+                  embedUrl: cleanMediaUrl(embedUrl),
                   serverType: 'embed',
                   sourceName: `${sName} (Embed)`
                 });

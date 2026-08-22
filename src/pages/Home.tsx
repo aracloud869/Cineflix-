@@ -271,11 +271,31 @@ export function Home() {
   const trending = homeMovies.slice(10, 26);
   const recommended = homeMovies.slice(26, 42);
 
-  const watchedMoviesMapped = watchedMovies.map((w: any) => ({
-    id: w.movieId,
-    name: w.movieName,
-    poster: w.poster,
-  })) as any[];
+  const watchedMoviesMapped = useMemo(() => {
+    const seen = new Set<string>();
+    const list: any[] = [];
+    if (Array.isArray(watchedMovies)) {
+      // Traverse from most recent (end of array or start of array depending on sort)
+      // Since new items are appended or prepended, let's keep the order but filter duplicates
+      watchedMovies.forEach((w: any) => {
+        if (!w || !w.movieId) return;
+        if (!w.movieName || w.movieName === 'Chi Tiết Phim' || w.movieName?.toLowerCase() === 'chi tiết phim') return;
+        if (!seen.has(w.movieId)) {
+          seen.add(w.movieId);
+          list.push({
+            id: w.movieId,
+            name: w.movieName,
+            poster: w.poster || '',
+            background: w.poster || '',
+            sourceIds: [w.movieId],
+            isHistory: true,
+            episodeTitle: w.episodeTitle || 'Bản Đầy Đủ'
+          });
+        }
+      });
+    }
+    return list;
+  }, [watchedMovies]);
 
   const MovieRow = ({ title, list, icon: RowIcon, viewAllPath }: { title: string; list: UnifiedMovie[]; icon?: any; viewAllPath?: string }) => {
     const scrollRef = useRef<HTMLDivElement>(null);
