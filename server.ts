@@ -12,7 +12,7 @@ app.use(express.json());
 
 // Helper to resolve IMDb ID from TMDB search
 async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
-  const apiKey = process.env.TMDB_API_KEY || "5201b54eb0968700e693a30576d7d4dc";
+  const apiKey = process.env.TMDB_API_KEY || "15d2ea6d0dc1d476efbca3de441b1ddc";
   const searchTypes: ('movie' | 'tv')[] = type === 'series' ? ['tv', 'movie'] : ['movie', 'tv'];
 
   for (const sType of searchTypes) {
@@ -124,16 +124,13 @@ app.get("/api/subdl/search", async (req, res) => {
       return res.json({ subtitles: [] });
     }
 
-    const subtitles = searchRes.data.subtitles.map((sub: any) => {
-      const isVi = (sub.language || sub.lang || '').toLowerCase().includes('vi');
-      return {
-        url: `/api/subdl/extract?url=${encodeURIComponent(sub.url)}`,
-        lang: isVi ? 'vie' : (sub.language || 'eng').toLowerCase(),
-        langName: isVi ? 'Tiếng Việt (SubDL)' : `${sub.language || sub.lang || 'English'} (SubDL)`,
-        addon: 'SubDL API',
-        id: sub.url
-      };
-    });
+    const subtitles = searchRes.data.subtitles.map((sub: any) => ({
+      url: `/api/subdl/extract?url=${encodeURIComponent(sub.url)}`,
+      lang: sub.language || 'vie',
+      langName: `${sub.lang || sub.language} (SubDL)`,
+      addon: 'SubDL API',
+      id: sub.url
+    }));
 
     res.json({ subtitles });
 
