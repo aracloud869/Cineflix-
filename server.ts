@@ -12,7 +12,7 @@ app.use(express.json());
 
 // Helper to resolve IMDb ID from TMDB search
 async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
-  const apiKey = process.env.TMDB_API_KEY || "15d2ea6d0dc1d476efbca3de441b1ddc";
+  const apiKey = process.env.TMDB_API_KEY || "5201b54eb0968700e693a30576d7d4dc";
   const searchTypes: ('movie' | 'tv')[] = type === 'series' ? ['tv', 'movie'] : ['movie', 'tv'];
 
   for (const sType of searchTypes) {
@@ -85,8 +85,8 @@ async function getImdbId(idOrTitle: string, type: 'movie' | 'series' = 'movie'):
   return await resolveImdbIdFromTmdb(titleQuery, type);
 }
 
-// SubDL API integration
-app.get("/api/subdl/vtt", async (req, res) => {
+// SubDL API integration - Search
+app.get("/api/subdl/search", async (req, res) => {
   const { imdb_id, type = 'movie' } = req.query;
   const SUBDL_API_KEY = "subdl_B_aIO1H-jyorIqf4B-DtIA5OUE1EBuapUlJebKMc27g";
 
@@ -105,12 +105,11 @@ app.get("/api/subdl/vtt", async (req, res) => {
   }
 
   try {
-    // 1. Search for Vietnamese subtitles
     const searchRes = await axios.get(`https://api.subdl.com/api/v1/subtitles`, {
       params: {
         api_key: SUBDL_API_KEY,
         imdb_id: resolvedImdbId,
-        languages: "vi",
+        languages: "vi,en",
         type: type === 'series' ? 'tv' : 'movie'
       }
     });
@@ -122,19 +121,41 @@ app.get("/api/subdl/vtt", async (req, res) => {
     }
 
     if (!searchRes.data.subtitles || searchRes.data.subtitles.length === 0) {
-      return res.status(404).json({ error: "No Vietnamese subtitles found for this IMDB ID" });
+      return res.json({ subtitles: [] });
     }
 
-    // Pick the first subtitle (best match usually)
-    const sub = searchRes.data.subtitles[0];
-    if (!sub || !sub.url) {
-      return res.status(404).json({ error: "Subtitle URL not found in response" });
-    }
+    const subtitles = searchRes.data.subtitles.map((sub: any) => {
+      const isVi = (sub.language || sub.lang || '').toLowerCase().includes('vi');
+      return {
+        url: `/api/subdl/extract?url=${encodeURIComponent(sub.url)}`,
+        lang: isVi ? 'vie' : (sub.language || 'eng').toLowerCase(),
+        langName: isVi ? 'Tiếng Việt (SubDL)' : `${sub.language || sub.lang || 'English'} (SubDL)`,
+        addon: 'SubDL API',
+        id: sub.url
+      };
+    });
 
-    // SubDL API returns url path, e.g., /subtitle/12345-vi.zip
-    const downloadUrl = `https://dl.subdl.com${sub.url}`;
+    res.json({ subtitles });
 
-    // 2. Download ZIP
+  } catch (error: any) {
+    console.error('SubDL search error:', error.message);
+    const status = error.response ? error.response.status : 500;
+    res.status(status).json({ error: "Failed to search subtitles from SubDL", details: error.message });
+  }
+});
+
+// SubDL API integration - Extract
+app.get("/api/subdl/extract", async (req, res) => {
+  const { url } = req.query;
+
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: "Missing or invalid zip url" });
+  }
+
+  try {
+    const downloadUrl = `https://dl.subdl.com${url}`;
+
+    // Download ZIP
     const zipResponse = await axios.get(downloadUrl, {
       responseType: 'arraybuffer',
       timeout: 20000,
@@ -143,11 +164,11 @@ app.get("/api/subdl/vtt", async (req, res) => {
       }
     });
 
-    // 3. Extract SRT and convert to VTT
+    // Extract SRT and convert to VTT
     const zip = new AdmZip(Buffer.from(zipResponse.data));
     const zipEntries = zip.getEntries();
     
-    // Find first .srt file (prefer srt)
+    // Find first .srt or .vtt file
     let srtEntry = zipEntries.find(entry => entry.entryName.toLowerCase().endsWith('.srt'));
     let vttEntry = zipEntries.find(entry => entry.entryName.toLowerCase().endsWith('.vtt'));
     
@@ -158,7 +179,6 @@ app.get("/api/subdl/vtt", async (req, res) => {
     let vttContent = "";
     if (vttEntry) {
       vttContent = vttEntry.getData().toString('utf8');
-      // Ensure it has correct header
       if (!vttContent.trim().startsWith('WEBVTT')) {
         vttContent = 'WEBVTT\n\n' + vttContent;
       }
@@ -172,7 +192,7 @@ app.get("/api/subdl/vtt", async (req, res) => {
     res.send(vttContent);
 
   } catch (error: any) {
-    console.error('SubDL error:', error.message);
+    console.error('SubDL extract error:', error.message);
     const status = error.response ? error.response.status : 500;
     res.status(status).json({ error: "Failed to process subtitles from SubDL", details: error.message });
   }

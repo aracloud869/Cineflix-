@@ -409,7 +409,8 @@ export function MovieDetails() {
                 currentEpisodeIdx={selectedEpisodeIdx}
                 onSelectEpisode={setSelectedEpisodeIdx}
                 onBack={handleGoBack}
-                imdbId={primaryMeta.id || id}
+                imdbId={primaryMeta.imdbId}
+                movieId={primaryMeta.id || id}
               />
             ) : (
               <div className="aspect-video w-full flex flex-col items-center justify-center bg-[#0d0e15] border-b border-white/10 p-6 text-center">

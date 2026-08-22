@@ -31,6 +31,8 @@ interface PlayerProps {
   onSelectEpisode?: (index: number) => void;
   onBack?: () => void;
   imdbId?: string;
+  movieId?: string;
+  userSubtitles?: any[];
 }
 
 export const Player: React.FC<PlayerProps> = ({ 
@@ -46,7 +48,9 @@ export const Player: React.FC<PlayerProps> = ({
   currentEpisodeIdx = 0,
   onSelectEpisode,
   onBack,
-  imdbId
+  imdbId,
+  movieId: propMovieId,
+  userSubtitles = []
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -63,6 +67,7 @@ export const Player: React.FC<PlayerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isTheater, setIsTheater] = useState(false);
   const [isLightsOff, setIsLightsOff] = useState(false);
+  const [useNativeControls, setUseNativeControls] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [showSettings, setShowSettings] = useState(false);
   const [showServerMenu, setShowServerMenu] = useState(false);
@@ -161,7 +166,7 @@ export const Player: React.FC<PlayerProps> = ({
       try {
         // Improved ID extraction to handle /movie/ID, /watch/ID or other patterns
         const pathParts = window.location.pathname.split('/').filter(Boolean);
-        const movieId = imdbId || pathParts.find(p => /^tt\d{7,10}$/.test(p)) || pathParts[pathParts.length - 1] || '';
+        const movieId = propMovieId || imdbId || pathParts.find(p => /^tt\d{7,10}$/.test(p)) || pathParts[pathParts.length - 1] || '';
         
         if (!movieId) {
           if (isMounted) setIsLoadingSubtitles(false);
@@ -211,22 +216,7 @@ export const Player: React.FC<PlayerProps> = ({
           }
         };
 
-        // 1. Fetch user-uploaded subtitles from Firestore
-        try {
-          const dbSubs = await getSubtitles(movieId);
-          const userSubs = dbSubs.map((s: any) => ({
-            url: s.fileUrl,
-            lang: 'vie',
-            langName: `Phụ đề người dùng: ${s.name}`,
-            addon: 'User Upload',
-            id: s.id || s.fileUrl
-          }));
-          addSubsToState(userSubs);
-        } catch (e) {
-          console.warn('Failed to fetch user subtitles:', e);
-        }
-
-        // 2. Fetch from /api/subtitles (AIO & Stremio SubDL addons)
+        // 1. Fetch from /api/subtitles (AIO & Stremio SubDL addons)
         try {
           const res = await axios.get('/api/subtitles', {
             params: {
@@ -244,19 +234,20 @@ export const Player: React.FC<PlayerProps> = ({
           console.warn('Failed to fetch from /api/subtitles:', e);
         }
 
-        // 3. Direct SubDL Fetch (Custom backend ZIP extraction)
+        // 2. Direct SubDL Fetch (Custom backend ZIP extraction)
         const idForSubDl = cleanImdbId || movieId;
         if (idForSubDl) {
           try {
-            const subdlVttUrl = `/api/subdl/vtt?imdb_id=${idForSubDl}&type=${isSeries ? 'series' : 'movie'}`;
-            const subdlSub = {
-              url: subdlVttUrl,
-              lang: 'vie',
-              langName: 'Tiếng Việt (SubDL)',
-              addon: 'SubDL API',
-              id: 'subdl-direct'
-            };
-            addSubsToState([subdlSub]);
+            const res = await axios.get('/api/subdl/search', {
+              params: {
+                imdb_id: idForSubDl,
+                type: isSeries ? 'series' : 'movie'
+              },
+              timeout: 10000
+            });
+            if (res.data && Array.isArray(res.data.subtitles)) {
+              addSubsToState(res.data.subtitles);
+            }
           } catch (e) {
             console.warn('Direct SubDL fetch failed:', e);
           }
@@ -303,6 +294,19 @@ export const Player: React.FC<PlayerProps> = ({
 
   // Load and parse VTT cues when activeSubtitle changes
   useEffect(() => {
+    // Sync native text tracks
+    if (videoRef.current) {
+      const tracks = videoRef.current.textTracks;
+      for (let i = 0; i < tracks.length; i++) {
+        const trackUrl = subtitles[i]?.url;
+        if (useNativeControls && trackUrl && activeSubtitle && trackUrl === activeSubtitle.url) {
+          tracks[i].mode = 'showing';
+        } else {
+          tracks[i].mode = 'hidden';
+        }
+      }
+    }
+
     if (!activeSubtitle || !activeSubtitle.url) {
       setSubtitleCues([]);
       setCurrentSubtitleText('');
@@ -341,7 +345,7 @@ export const Player: React.FC<PlayerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [activeSubtitle]);
+  }, [activeSubtitle, useNativeControls, subtitles]);
 
   // Load and parse VTT cues when activeSubtitle2 changes
   useEffect(() => {
@@ -945,6 +949,38 @@ export const Player: React.FC<PlayerProps> = ({
     }, 700);
   };
 
+  // Effect for updating user-uploaded subtitles dynamically without reload
+  useEffect(() => {
+    if (userSubtitles && userSubtitles.length > 0) {
+      const mappedUserSubs = userSubtitles.map((s: any) => ({
+        url: s.fileUrl,
+        lang: 'vie',
+        langName: `Phụ đề người dùng: ${s.name}`,
+        addon: 'User Upload',
+        id: s.id || s.fileUrl
+      }));
+      setSubtitles(prev => {
+        const newSubs = [...prev];
+        let hasNew = false;
+        mappedUserSubs.forEach(uSub => {
+          if (!newSubs.some(e => e.id === uSub.id || e.url === uSub.url)) {
+            newSubs.push(uSub);
+            hasNew = true;
+          }
+        });
+        if (hasNew) {
+           return newSubs;
+        }
+        return prev;
+      });
+      
+      // Auto select the first user subtitle if none is active
+      if (!activeSubtitle && mappedUserSubs.length > 0) {
+        setActiveSubtitle(mappedUserSubs[0]);
+      }
+    }
+  }, [userSubtitles, activeSubtitle]);
+
   const togglePlay = () => {
     if (isEmbed) return;
     const video = videoRef.current;
@@ -1257,16 +1293,18 @@ export const Player: React.FC<PlayerProps> = ({
               playsInline
               crossOrigin="anonymous"
               referrerPolicy="no-referrer"
+              controls={useNativeControls}
             >
-              {activeSubtitle && activeSubtitle.url && activeSubtitle.url !== 'local' && (
+              {subtitles.map((sub, idx) => sub.url && sub.url !== 'local' && (
                 <track 
+                  key={`track-${idx}`}
                   kind="captions" 
-                  src={activeSubtitle.url.startsWith('/') ? activeSubtitle.url : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle.url)}`} 
-                  srcLang={activeSubtitle.lang || 'vi'} 
-                  label={activeSubtitle.langName || 'Tiếng Việt'} 
-                  default 
+                  src={sub.url.startsWith('/') ? sub.url : `/api/subtitles/proxy?url=${encodeURIComponent(sub.url)}`} 
+                  srcLang={sub.lang || `vi-${idx}`} 
+                  label={sub.langName || (sub.lang === 'vie' || sub.lang === 'vi' ? `Tiếng Việt ${idx + 1}` : `Language ${idx + 1}`)} 
+                  default={activeSubtitle?.url === sub.url}
                 />
-              )}
+              ))}
             </video>
 
             {/* Rotation Toast Badge Overlay */}
@@ -1279,7 +1317,7 @@ export const Player: React.FC<PlayerProps> = ({
 
             {/* Buffering Indicator */}
             {isBuffering && !isAutoSwitching && !hasError && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-25">
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
                 <div className="p-4 rounded-2xl bg-black/60 backdrop-blur-md border border-white/10 flex flex-col items-center gap-2 shadow-2xl animate-in fade-in duration-200">
                   <Loader2 className="w-8 h-8 text-[#E50914] animate-spin" />
                   <span className="text-xs text-gray-200 font-medium tracking-wide">Đang tối ưu luồng phát...</span>
@@ -1288,8 +1326,8 @@ export const Player: React.FC<PlayerProps> = ({
             )}
 
             {/* CUSTOM SUBTITLE OVERLAY */}
-            {(currentSubtitleText || currentSubtitleText2) && !isEmbed && (
-              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-25 pointer-events-none flex flex-col items-center gap-1">
+            {(currentSubtitleText || currentSubtitleText2) && !isEmbed && !useNativeControls && (
+              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-30 pointer-events-none flex flex-col items-center gap-1">
                 {currentSubtitleText && (
                   <div 
                     className={`px-3.5 py-1.5 rounded-xl max-w-2xl text-center leading-relaxed transition-all ${
@@ -1366,7 +1404,7 @@ export const Player: React.FC<PlayerProps> = ({
             {feedback.type === 'seek-backward' && (
               <div 
                 key={feedback.key}
-                className="absolute left-0 top-0 bottom-0 w-1/3 z-25 flex items-center justify-center pointer-events-none bg-gradient-to-r from-[#E50914]/30 to-transparent rounded-r-full animate-in fade-in zoom-in duration-200"
+                className="absolute left-0 top-0 bottom-0 w-1/3 z-30 flex items-center justify-center pointer-events-none bg-gradient-to-r from-[#E50914]/30 to-transparent rounded-r-full animate-in fade-in zoom-in duration-200"
               >
                 <div className="flex flex-col items-center justify-center p-4 rounded-2xl bg-black/70 backdrop-blur-md border border-white/20 shadow-2xl">
                   <Rewind className="w-8 h-8 text-white fill-white animate-pulse" />
@@ -1379,7 +1417,7 @@ export const Player: React.FC<PlayerProps> = ({
             {feedback.type === 'seek-forward' && (
               <div 
                 key={feedback.key}
-                className="absolute right-0 top-0 bottom-0 w-1/3 z-25 flex items-center justify-center pointer-events-none bg-gradient-to-l from-[#E50914]/30 to-transparent rounded-l-full animate-in fade-in zoom-in duration-200"
+                className="absolute right-0 top-0 bottom-0 w-1/3 z-30 flex items-center justify-center pointer-events-none bg-gradient-to-l from-[#E50914]/30 to-transparent rounded-l-full animate-in fade-in zoom-in duration-200"
               >
                 <div className="flex flex-col items-center justify-center p-4 rounded-2xl bg-black/70 backdrop-blur-md border border-white/20 shadow-2xl">
                   <FastForward className="w-8 h-8 text-white fill-white animate-pulse" />
@@ -1392,7 +1430,7 @@ export const Player: React.FC<PlayerProps> = ({
             {(feedback.type === 'play' || feedback.type === 'pause') && (
               <div 
                 key={feedback.key}
-                className="absolute inset-0 z-25 flex items-center justify-center pointer-events-none animate-in zoom-in-75 fade-in duration-150"
+                className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none animate-in zoom-in-75 fade-in duration-150"
               >
                 <div className="p-5 rounded-full bg-black/80 backdrop-blur-lg border-2 border-white/30 shadow-2xl">
                   {feedback.type === 'play' ? (
@@ -1492,6 +1530,13 @@ export const Player: React.FC<PlayerProps> = ({
                 >
                   <Tv className="w-4 h-4" />
                 </button>
+                <button
+                  onClick={() => setUseNativeControls(!useNativeControls)}
+                  className={`px-2 py-1.5 rounded-full font-bold text-[10px] transition-colors ${useNativeControls ? 'bg-[#E50914] text-white' : 'bg-black/60 text-gray-300 hover:text-white border border-white/20'}`}
+                  title="Bật/Tắt trình phát mặc định của trình duyệt"
+                >
+                  GIAO DIỆN GỐC
+                </button>
                 {effectiveEmbedUrl && (
                   <button
                     onClick={() => {
@@ -1509,12 +1554,13 @@ export const Player: React.FC<PlayerProps> = ({
             </div>
 
             {/* Bottom Controls Bar */}
-            <div 
-              className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent p-2 sm:p-4 transition-opacity duration-300 flex flex-col justify-end z-30 pointer-events-auto ${
-                showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
-              }`}
-              onClick={(e) => e.stopPropagation()}
-            >
+            {!useNativeControls && (
+              <div 
+                className={`absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent p-2 sm:p-4 transition-opacity duration-300 flex flex-col justify-end z-30 pointer-events-auto ${
+                  showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+                }`}
+                onClick={(e) => e.stopPropagation()}
+              >
               {/* Progress Slider */}
               <div className="relative w-full mb-2 sm:mb-3 flex items-center group/scrub">
                 <div className="relative w-full h-1 sm:h-1.5 bg-white/20 hover:h-2 sm:hover:h-2.5 rounded-full overflow-hidden transition-all">
@@ -1691,6 +1737,7 @@ export const Player: React.FC<PlayerProps> = ({
                 </div>
               </div>
             </div>
+            )}
           </>
         )}
 
