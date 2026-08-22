@@ -6,10 +6,13 @@ import {
   Play, Pause, Maximize, Minimize, Settings, SkipForward, SkipBack, 
   Volume2, VolumeX, Volume1, RotateCcw, RotateCw, AlertTriangle, Moon, Sun, 
   Tv, Server, Check, ShieldCheck, Sparkles, FastForward, Rewind, Loader2,
-  ListVideo, X, Search, Smartphone, ArrowLeft, Languages, Upload, Sliders
+  ListVideo, X, Search, Smartphone, ArrowLeft, Languages, Upload, Sliders, RefreshCw
 } from 'lucide-react';
 import { mapSourceName, detectStreamType, formatDuration, cleanMediaUrl } from '../utils';
 import { getSubtitles } from '../db/firestore';
+
+// Global cache for parsed subtitle cues to make switching and re-loading instant
+const subtitleCueCache = new Map<string, { start: number; end: number; text: string }[]>();
 
 export interface PlayerEpisode {
   title: string;
@@ -83,6 +86,46 @@ export const Player: React.FC<PlayerProps> = ({
   const [isAutoSwitching, setIsAutoSwitching] = useState(false);
   const [playerMode, setPlayerMode] = useState<'auto' | 'embed' | 'native'>('auto');
   const [retryCount, setRetryCount] = useState(0);
+
+  // Resume Progress Keys
+  const resumeKey = useMemo(() => {
+    if (!propMovieId) return null;
+    return `resume_${propMovieId}_${currentEpisodeIdx}`;
+  }, [propMovieId, currentEpisodeIdx]);
+
+  // Handle Resuming Time
+  const hasResumedRef = useRef(false);
+  useEffect(() => {
+    hasResumedRef.current = false;
+  }, [resumeKey]);
+
+  useEffect(() => {
+    if (resumeKey && videoRef.current && duration > 0 && !hasResumedRef.current) {
+      const savedTime = localStorage.getItem(resumeKey);
+      if (savedTime) {
+        const time = parseFloat(savedTime);
+        if (time > 10 && time < duration - 10) {
+          videoRef.current.currentTime = time;
+          setCurrentTime(time);
+          console.log(`[Player] Resumed to ${time}s`);
+        }
+      }
+      hasResumedRef.current = true;
+    }
+  }, [resumeKey, duration]);
+
+  // Periodic Save Progress
+  useEffect(() => {
+    if (!isPlaying || !resumeKey || currentTime <= 10) return;
+
+    const interval = setInterval(() => {
+      if (currentTime > 10 && duration > 0 && currentTime < duration - 10) {
+        localStorage.setItem(resumeKey, currentTime.toString());
+      }
+    }, 10000); // Save every 10s
+
+    return () => clearInterval(interval);
+  }, [isPlaying, resumeKey, currentTime, duration]);
 
   // Auto audio preference (Lồng tiếng, Vietsub, Thuyết minh)
   const [autoAudioPref, setAutoAudioPref] = useState<'all' | 'long-tieng' | 'vietsub' | 'thuyet-minh'>(() => {
@@ -300,28 +343,60 @@ export const Player: React.FC<PlayerProps> = ({
     let isMounted = true;
     async function loadSubFile() {
       try {
-        if (activeSubtitle.url === 'local') return;
-        
+        // Basic validation to prevent 400 errors
+        if (!activeSubtitle.url || 
+            activeSubtitle.url === 'undefined' || 
+            activeSubtitle.url === 'null' ||
+            activeSubtitle.url.includes('undefined')) {
+          console.warn('[Player] Skipping invalid subtitle URL:', activeSubtitle.url);
+          setSubtitleCues([]);
+          return;
+        }
+
+        // Load from cache if available for instant display
+        if (subtitleCueCache.has(activeSubtitle.url)) {
+          setSubtitleCues(subtitleCueCache.get(activeSubtitle.url)!);
+          return;
+        }
+
         let vttText = "";
         if (activeSubtitle.url.startsWith('text-fallback:')) {
           vttText = activeSubtitle.url.replace('text-fallback:', '');
         } else {
-          // Don't proxy internal routes
-          const url = activeSubtitle.url.startsWith('/') 
+          // Don't proxy internal routes or already proxied routes
+          const url = (activeSubtitle.url.startsWith('/') || activeSubtitle.url.startsWith('/api/'))
             ? activeSubtitle.url 
             : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle.url)}`;
             
           const res = await axios.get(url);
-          vttText = res.data;
+          const data = res.data;
+          vttText = typeof data === 'string' ? data : (typeof data === 'object' ? JSON.stringify(data) : String(data));
         }
 
         if (!isMounted) return;
 
+        if (!vttText || vttText.trim().length < 10) {
+          throw new Error('Empty or invalid subtitle content');
+        }
+
         const cues = parseVttString(vttText);
         setSubtitleCues(cues);
+        
+        // Save to cache for future instant access
+        if (activeSubtitle.url) {
+          subtitleCueCache.set(activeSubtitle.url, cues);
+        }
+        
+        if (cues.length === 0) {
+           console.warn('No subtitle cues parsed from:', activeSubtitle.url);
+        }
       } catch (err) {
         console.error('Error loading subtitle file:', err);
-        setSubtitleCues([]);
+        setSubtitleCues([{
+          start: 0,
+          end: 10,
+          text: '[Lỗi tải phụ đề: Vui lòng thử chọn nguồn phụ đề khác hoặc tải lại trang]'
+        }]);
       }
     }
 
@@ -342,25 +417,41 @@ export const Player: React.FC<PlayerProps> = ({
     let isMounted = true;
     async function loadSubFile2() {
       try {
+        // Load from cache if available
+        if (subtitleCueCache.has(activeSubtitle2.url)) {
+          setSubtitleCues2(subtitleCueCache.get(activeSubtitle2.url)!);
+          return;
+        }
+
         if (activeSubtitle2.url === 'local') return;
         
         let vttText = "";
         if (activeSubtitle2.url.startsWith('text-fallback:')) {
           vttText = activeSubtitle2.url.replace('text-fallback:', '');
         } else {
-          // Don't proxy internal routes
-          const url = activeSubtitle2.url.startsWith('/') 
+          // Don't proxy internal routes or already proxied routes
+          const url = (activeSubtitle2.url.startsWith('/') || activeSubtitle2.url.startsWith('/api/'))
             ? activeSubtitle2.url 
             : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle2.url)}`;
             
           const res = await axios.get(url);
-          vttText = res.data;
+          const data = res.data;
+          vttText = typeof data === 'string' ? data : (typeof data === 'object' ? JSON.stringify(data) : String(data));
         }
 
         if (!isMounted) return;
 
+        if (!vttText || vttText.trim().length < 10) {
+          throw new Error('Empty or invalid secondary subtitle content');
+        }
+
         const cues = parseVttString(vttText);
         setSubtitleCues2(cues);
+        
+        // Save to cache
+        if (activeSubtitle2.url) {
+          subtitleCueCache.set(activeSubtitle2.url, cues);
+        }
       } catch (err) {
         console.error('Error loading secondary subtitle file:', err);
         setSubtitleCues2([]);
@@ -424,8 +515,11 @@ export const Player: React.FC<PlayerProps> = ({
   function parseTs(timeStr: string) {
     if (!timeStr) return 0;
     
-    // Clean up potential prefixes like WEBVTT or cue numbers
-    const cleanTime = timeStr.replace(/[^\d:.,]/g, '').replace(',', '.');
+    // Some VTT cues have extra metadata after the timestamp, e.g., "00:00:10.000 line:80%"
+    // We take the first part which is the actual timestamp
+    const tsToParse = timeStr.trim().split(/\s+/)[0];
+
+    const cleanTime = tsToParse.replace(/[^\d:.,]/g, '').replace(',', '.');
     const parts = cleanTime.split(':');
     
     try {
@@ -997,7 +1091,12 @@ export const Player: React.FC<PlayerProps> = ({
     setCurrentTime(video.currentTime);
     setDuration(video.duration || 0);
 
-    if (video.buffered.length > 0) {
+    // Occasional save on important updates
+    if (resumeKey && video.currentTime > 0 && Math.floor(video.currentTime) % 30 === 0) {
+      localStorage.setItem(resumeKey, video.currentTime.toString());
+    }
+
+    if (video.buffered && video.buffered.length > 0) {
       const bufferedEnd = video.buffered.end(video.buffered.length - 1);
       setBuffered(bufferedEnd);
     }
@@ -1311,7 +1410,7 @@ export const Player: React.FC<PlayerProps> = ({
 
             {/* CUSTOM SUBTITLE OVERLAY */}
             {(currentSubtitleText || currentSubtitleText2) && !isEmbed && !useNativeControls && (
-              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-30 pointer-events-none flex flex-col items-center gap-1">
+              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-40 pointer-events-none flex flex-col items-center gap-1">
                 {currentSubtitleText && (
                   <div 
                     className={`px-3.5 py-1.5 rounded-xl max-w-2xl text-center leading-relaxed transition-all ${

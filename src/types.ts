@@ -47,6 +47,8 @@ export interface UnifiedMovie {
   genres?: string[];
   year?: number | string;
   overview?: string;
+  isHistory?: boolean;
+  episodeTitle?: string;
 }
 
 export interface MetaDetailResponse {

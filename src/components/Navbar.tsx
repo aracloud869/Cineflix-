@@ -210,6 +210,7 @@ export function Navbar() {
                     { id: 'tr-series', name: 'TR Phim Bộ' },
                     { id: 'iptv', name: 'K20 Live TV 4K' },
                     { id: 'sports', name: 'K20 Thể Thao' },
+                    { id: 'the-thao', name: 'Thể Thao (Genre)' },
                   ].map((s) => (
                     <Link
                       key={s.id}
@@ -418,6 +419,7 @@ export function Navbar() {
                   { id: 'tr-series', name: 'TR Phim Bộ' },
                   { id: 'iptv', name: 'K20 Live TV 4K' },
                   { id: 'sports', name: 'K20 Thể Thao' },
+                  { id: 'the-thao', name: 'Thể Thao (Genre)' },
                 ].map((s) => (
                   <Link
                     key={s.id}
