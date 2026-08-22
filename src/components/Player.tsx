@@ -77,18 +77,22 @@ export const Player: React.FC<PlayerProps> = ({
   const [playerMode, setPlayerMode] = useState<'auto' | 'embed' | 'native'>('auto');
   const [retryCount, setRetryCount] = useState(0);
 
-  // VSmov specific state
-  const [vsmovData, setVsmovData] = useState<{ video_url: string; subtitle_url: string } | null>(null);
-  const [isScrapingVsmov, setIsScrapingVsmov] = useState(false);
-
   // Auto audio preference (Lồng tiếng, Vietsub, Thuyết minh)
   const [autoAudioPref, setAutoAudioPref] = useState<'all' | 'long-tieng' | 'vietsub' | 'thuyet-minh'>(() => {
     return (localStorage.getItem('auto_audio_pref') as any) || 'all';
   });
 
+  const [enableAutoFailover, setEnableAutoFailover] = useState(() => {
+    return localStorage.getItem('auto_failover') !== 'false'; // default true
+  });
+
   useEffect(() => {
     localStorage.setItem('auto_audio_pref', autoAudioPref);
   }, [autoAudioPref]);
+
+  useEffect(() => {
+    localStorage.setItem('auto_failover', enableAutoFailover.toString());
+  }, [enableAutoFailover]);
 
   // Auto-select stream based on preferred audio type
   useEffect(() => {
@@ -116,8 +120,11 @@ export const Player: React.FC<PlayerProps> = ({
   // Subtitle states from AIO Subtitle and SubDL addons
   const [subtitles, setSubtitles] = useState<any[]>([]);
   const [activeSubtitle, setActiveSubtitle] = useState<any | null>(null);
+  const [activeSubtitle2, setActiveSubtitle2] = useState<any | null>(null);
   const [subtitleCues, setSubtitleCues] = useState<{ start: number; end: number; text: string }[]>([]);
+  const [subtitleCues2, setSubtitleCues2] = useState<{ start: number; end: number; text: string }[]>([]);
   const [currentSubtitleText, setCurrentSubtitleText] = useState('');
+  const [currentSubtitleText2, setCurrentSubtitleText2] = useState('');
   const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
   const [isLoadingSubtitles, setIsLoadingSubtitles] = useState(false);
   const [subtitleSettings, setSubtitleSettings] = useState({
@@ -127,12 +134,21 @@ export const Player: React.FC<PlayerProps> = ({
     offset: 0
   });
 
+  // Quality states
+  const [availableQualities, setAvailableQualities] = useState<any[]>([]);
+  const [currentQualityLevel, setCurrentQualityLevel] = useState<number>(-1);
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
+
   // Reset states on stream change
   useEffect(() => {
     setActiveSubtitle(null);
+    setActiveSubtitle2(null);
     setSubtitleCues([]);
+    setSubtitleCues2([]);
     setCurrentSubtitleText('');
-    setVsmovData(null);
+    setCurrentSubtitleText2('');
+    setAvailableQualities([]);
+    setCurrentQualityLevel(-1);
   }, [stream, currentEpisodeIdx]);
 
   // Fetch subtitles from AIO Subtitle & SubDL addons
@@ -141,9 +157,6 @@ export const Player: React.FC<PlayerProps> = ({
     async function fetchSubs() {
       setIsLoadingSubtitles(true);
       try {
-        const streamUrl = stream.url || stream.externalUrl || '';
-        const isVsmov = /streamvsmov\.com/.test(streamUrl);
-
         // Improved ID extraction to handle /movie/ID, /watch/ID or other patterns
         const pathParts = window.location.pathname.split('/').filter(Boolean);
         const movieId = imdbId || pathParts.find(p => /^tt\d{7,10}$/.test(p)) || pathParts[pathParts.length - 1] || '';
@@ -208,57 +221,36 @@ export const Player: React.FC<PlayerProps> = ({
                   title: movieTitle
                 }
               });
-              if (osRes.data && osRes.data.success && osRes.data.subtitle_url) {
-                const osSub = {
-                  url: osRes.data.subtitle_url,
-                  lang: 'vie',
-                  langName: 'Tiếng Việt (OpenSubtitles)',
-                  addon: 'OpenSubtitles',
-                  id: 'opensubtitles-direct'
-                };
-                if (!allSubs.find(s => s.id === 'opensubtitles-direct')) {
-                  allSubs = [osSub, ...allSubs];
-                }
+              if (osRes.data && osRes.data.success && Array.isArray(osRes.data.subtitles)) {
+                const osSubs = osRes.data.subtitles.map((sub: any) => ({
+                  url: sub.url,
+                  lang: sub.lang,
+                  langName: sub.langName,
+                  addon: sub.addon,
+                  id: sub.id
+                }));
+                
+                // Add new subs without duplicates
+                osSubs.forEach((sub: any) => {
+                  if (!allSubs.find(s => s.id === sub.id)) {
+                    allSubs.push(sub);
+                  }
+                });
               }
             } catch (e) {
               console.warn('OpenSubtitles direct fetch failed:', e);
             }
           }
 
-          // If VSmov data is already available, add its sub to the list if not already there
-          if (vsmovData?.subtitle_url) {
-            const vsmovSub = {
-              url: vsmovData.subtitle_url,
-              lang: 'vie',
-              langName: 'Tiếng Việt (VSmov)',
-              addon: 'VSmov',
-              id: 'vsmov-sub'
-            };
-            if (!allSubs.find(s => s.url === vsmovSub.url)) {
-              allSubs = [vsmovSub, ...allSubs];
-            }
-          }
-
           setSubtitles(allSubs);
           
-          // Only auto-select if not VSmov or if we already have the VSmov sub in the list
-          const isVsmov = /streamvsmov\.com/.test(stream.url || stream.externalUrl || '');
-          const hasVsmovSub = allSubs.some(s => s.addon === 'VSmov');
-
           const viSub = allSubs.find((s: any) => (s.lang || '').toLowerCase().includes('vi') || (s.lang || '').toLowerCase().includes('vie'));
           
           if (!activeSubtitle) {
-            if (isVsmov) {
-              if (hasVsmovSub && viSub && viSub.addon === 'VSmov') {
-                setActiveSubtitle(viSub);
-              }
-              // If VSmov but sub not ready yet, don't pick a random one
-            } else {
-              if (viSub) {
-                setActiveSubtitle(viSub);
-              } else if (allSubs.length > 0) {
-                setActiveSubtitle(allSubs[0]);
-              }
+            if (viSub) {
+              setActiveSubtitle(viSub);
+            } else if (allSubs.length > 0) {
+              setActiveSubtitle(allSubs[0]);
             }
           }
         }
@@ -273,52 +265,7 @@ export const Player: React.FC<PlayerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [stream, currentEpisodeIdx, vsmovData]);
-
-  // VSmov Scraper logic
-  useEffect(() => {
-    const streamUrl = stream.url || stream.externalUrl || '';
-    if (!/streamvsmov\.com/.test(streamUrl)) {
-      setVsmovData(null);
-      return;
-    }
-
-    let isMounted = true;
-    async function scrapeVsmov() {
-      setIsScrapingVsmov(true);
-      try {
-        const res = await axios.get('/api/scrape-vsmov', {
-          params: { url: streamUrl }
-        });
-        if (isMounted && res.data) {
-          setVsmovData({
-            video_url: res.data.video_url,
-            subtitle_url: res.data.subtitle_url
-          });
-          
-          // Automatically set VSmov subtitle if found
-          if (res.data.subtitle_url) {
-            setActiveSubtitle({
-              url: res.data.subtitle_url,
-              lang: 'vie',
-              langName: 'Tiếng Việt (VSmov)',
-              addon: 'VSmov',
-              id: 'vsmov-sub'
-            });
-          }
-        }
-      } catch (err) {
-        console.error('VSmov scraping failed:', err);
-      } finally {
-        if (isMounted) setIsScrapingVsmov(false);
-      }
-    }
-
-    scrapeVsmov();
-    return () => {
-      isMounted = false;
-    };
-  }, [stream.url, stream.externalUrl]);
+  }, [stream, currentEpisodeIdx]);
 
   // Load and parse VTT cues when activeSubtitle changes
   useEffect(() => {
@@ -361,6 +308,48 @@ export const Player: React.FC<PlayerProps> = ({
       isMounted = false;
     };
   }, [activeSubtitle]);
+
+  // Load and parse VTT cues when activeSubtitle2 changes
+  useEffect(() => {
+    if (!activeSubtitle2 || !activeSubtitle2.url) {
+      setSubtitleCues2([]);
+      setCurrentSubtitleText2('');
+      return;
+    }
+
+    let isMounted = true;
+    async function loadSubFile2() {
+      try {
+        if (activeSubtitle2.url === 'local') return;
+        
+        let vttText = "";
+        if (activeSubtitle2.url.startsWith('text-fallback:')) {
+          vttText = activeSubtitle2.url.replace('text-fallback:', '');
+        } else {
+          // Don't proxy internal routes
+          const url = activeSubtitle2.url.startsWith('/') 
+            ? activeSubtitle2.url 
+            : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle2.url)}`;
+            
+          const res = await axios.get(url);
+          vttText = res.data;
+        }
+
+        if (!isMounted) return;
+
+        const cues = parseVttString(vttText);
+        setSubtitleCues2(cues);
+      } catch (err) {
+        console.error('Error loading secondary subtitle file:', err);
+        setSubtitleCues2([]);
+      }
+    }
+
+    loadSubFile2();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeSubtitle2]);
 
   function parseVttString(vttString: string) {
     const cues: { start: number; end: number; text: string }[] = [];
@@ -435,12 +424,20 @@ export const Player: React.FC<PlayerProps> = ({
   useEffect(() => {
     if (subtitleCues.length === 0) {
       setCurrentSubtitleText('');
-      return;
+    } else {
+      const adjustedTime = currentTime + subtitleSettings.offset;
+      const match = subtitleCues.find(c => adjustedTime >= c.start && adjustedTime <= c.end);
+      setCurrentSubtitleText(match ? match.text : '');
     }
-    const adjustedTime = currentTime + subtitleSettings.offset;
-    const match = subtitleCues.find(c => adjustedTime >= c.start && adjustedTime <= c.end);
-    setCurrentSubtitleText(match ? match.text : '');
-  }, [currentTime, subtitleCues, subtitleSettings.offset]);
+
+    if (subtitleCues2.length === 0) {
+      setCurrentSubtitleText2('');
+    } else {
+      const adjustedTime = currentTime + subtitleSettings.offset;
+      const match2 = subtitleCues2.find(c => adjustedTime >= c.start && adjustedTime <= c.end);
+      setCurrentSubtitleText2(match2 ? match2.text : '');
+    }
+  }, [currentTime, subtitleCues, subtitleCues2, subtitleSettings.offset]);
 
   function srtToVtt(srt: string): string {
     if (!srt) return 'WEBVTT\n\n';
@@ -470,11 +467,10 @@ export const Player: React.FC<PlayerProps> = ({
 
   const currentStreamType = detectStreamType(stream.url || stream.externalUrl);
   const streamUrl = stream.url || stream.externalUrl || '';
-  const isVsmov = /streamvsmov\.com/.test(streamUrl);
   
   const isEmbed = playerMode === 'embed' || 
-    (!stream.url && !!stream.externalUrl && !isVsmov) || 
-    (playerMode === 'auto' && currentStreamType === 'embed' && !isVsmov);
+    (!stream.url && !!stream.externalUrl) || 
+    (playerMode === 'auto' && currentStreamType === 'embed');
   
   const effectiveEmbedUrl = cleanMediaUrl(stream.externalUrl || stream.embedUrl || (currentStreamType === 'embed' ? stream.url : ''));
 
@@ -556,6 +552,13 @@ export const Player: React.FC<PlayerProps> = ({
   // Attempt smart auto-failover
   const triggerAutoFailover = useCallback((reason: string) => {
     if (failoverTimeoutRef.current) clearTimeout(failoverTimeoutRef.current);
+    
+    if (!enableAutoFailover) {
+      setHasError(true);
+      setErrorMessage(reason);
+      return;
+    }
+
     setIsAutoSwitching(true);
     setIsBuffering(false);
     setErrorMessage(reason);
@@ -585,7 +588,7 @@ export const Player: React.FC<PlayerProps> = ({
       setIsAutoSwitching(false);
       setHasError(true);
     }, 1200);
-  }, [effectiveEmbedUrl, playerMode, allStreams, stream, onStreamChange]);
+  }, [effectiveEmbedUrl, playerMode, allStreams, stream, onStreamChange, enableAutoFailover]);
 
   // Helper safe play to handle browser autoplay policies
   const safePlay = useCallback(async (video: HTMLVideoElement) => {
@@ -640,16 +643,8 @@ export const Player: React.FC<PlayerProps> = ({
       hlsRef.current = null;
     }
 
-    // Use VSmov scraped URL if available
-    const streamUrl = stream.url || stream.externalUrl || '';
-    const isVsmov = /streamvsmov\.com/.test(streamUrl);
-    
-    let url = cleanMediaUrl(isVsmov && vsmovData ? vsmovData.video_url : stream.url);
-    
-    // If it's VSmov but data isn't ready yet, wait
-    if (isVsmov && !vsmovData) {
-      return;
-    }
+    // Use direct stream URL
+    let url = cleanMediaUrl(stream.url);
 
     const isMp4 = url.includes('.mp4') || url.includes('.m4v') || url.includes('type=mp4') || url.includes('format=mp4');
     const isHlsStream = !isMp4 && (url.includes('.m3u8') || url.includes('proxy-playlist') || currentStreamType === 'hls');
@@ -695,9 +690,19 @@ export const Player: React.FC<PlayerProps> = ({
       hls.loadSource(url);
       hls.attachMedia(video);
 
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.on(Hls.Events.MANIFEST_PARSED, (_event, data) => {
         setHasError(false);
         safePlay(video);
+        if (data.levels && data.levels.length > 0) {
+          setAvailableQualities(data.levels);
+          setCurrentQualityLevel(hls.currentLevel);
+        } else {
+          setAvailableQualities([]);
+        }
+      });
+
+      hls.on(Hls.Events.LEVEL_SWITCHED, (_event, data) => {
+        setCurrentQualityLevel(data.level);
       });
 
       hls.on(Hls.Events.FRAG_LOADED, () => {
@@ -1249,24 +1254,44 @@ export const Player: React.FC<PlayerProps> = ({
             )}
 
             {/* CUSTOM SUBTITLE OVERLAY */}
-            {currentSubtitleText && !isEmbed && (
-              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-25 pointer-events-none flex justify-center">
-                <div 
-                  className={`px-3.5 py-1.5 rounded-xl max-w-2xl text-center leading-relaxed transition-all ${
-                    subtitleSettings.fontSize === 'sm' ? 'text-xs sm:text-sm' :
-                    subtitleSettings.fontSize === 'base' ? 'text-sm sm:text-base' :
-                    subtitleSettings.fontSize === 'lg' ? 'text-base sm:text-lg' :
-                    subtitleSettings.fontSize === 'xl' ? 'text-lg sm:text-xl' : 'text-xl sm:text-2xl'
-                  } font-bold shadow-2xl backdrop-blur-sm`}
-                  style={{
-                    color: subtitleSettings.fontColor,
-                    backgroundColor: subtitleSettings.bgColor,
-                    textShadow: '0 2px 4px rgba(0,0,0,0.95)',
-                    whiteSpace: 'pre-line'
-                  }}
-                >
-                  {currentSubtitleText}
-                </div>
+            {(currentSubtitleText || currentSubtitleText2) && !isEmbed && (
+              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-25 pointer-events-none flex flex-col items-center gap-1">
+                {currentSubtitleText && (
+                  <div 
+                    className={`px-3.5 py-1.5 rounded-xl max-w-2xl text-center leading-relaxed transition-all ${
+                      subtitleSettings.fontSize === 'sm' ? 'text-xs sm:text-sm' :
+                      subtitleSettings.fontSize === 'base' ? 'text-sm sm:text-base' :
+                      subtitleSettings.fontSize === 'lg' ? 'text-base sm:text-lg' :
+                      subtitleSettings.fontSize === 'xl' ? 'text-lg sm:text-xl' : 'text-xl sm:text-2xl'
+                    } font-bold shadow-2xl backdrop-blur-sm`}
+                    style={{
+                      color: subtitleSettings.fontColor,
+                      backgroundColor: subtitleSettings.bgColor,
+                      textShadow: '0 2px 4px rgba(0,0,0,0.95)',
+                      whiteSpace: 'pre-line'
+                    }}
+                  >
+                    {currentSubtitleText}
+                  </div>
+                )}
+                {currentSubtitleText2 && (
+                  <div 
+                    className={`px-3.5 py-1.5 rounded-xl max-w-2xl text-center leading-relaxed transition-all ${
+                      subtitleSettings.fontSize === 'sm' ? 'text-[10px] sm:text-xs' :
+                      subtitleSettings.fontSize === 'base' ? 'text-xs sm:text-sm' :
+                      subtitleSettings.fontSize === 'lg' ? 'text-sm sm:text-base' :
+                      subtitleSettings.fontSize === 'xl' ? 'text-base sm:text-lg' : 'text-lg sm:text-xl'
+                    } font-semibold shadow-2xl backdrop-blur-sm opacity-90`}
+                    style={{
+                      color: '#facc15', // secondary subtitle uses a different color to distinguish
+                      backgroundColor: subtitleSettings.bgColor,
+                      textShadow: '0 2px 4px rgba(0,0,0,0.95)',
+                      whiteSpace: 'pre-line'
+                    }}
+                  >
+                    {currentSubtitleText2}
+                  </div>
+                )}
               </div>
             )}
 
@@ -1843,6 +1868,58 @@ export const Player: React.FC<PlayerProps> = ({
               </div>
             )}
 
+            {/* Quality Selection */}
+            {availableQualities.length > 0 && (
+              <div className="mb-4">
+                <span className="text-gray-400 block mb-1.5 font-medium">Chất lượng Video</span>
+                <div className="flex flex-wrap gap-1">
+                  <button
+                    onClick={() => {
+                      if (hlsRef.current) hlsRef.current.currentLevel = -1;
+                    }}
+                    className={`py-1.5 px-2 rounded font-medium transition-colors ${
+                      currentQualityLevel === -1 ? 'bg-[#E50914] text-white font-bold' : 'bg-white/5 hover:bg-white/10 text-gray-300'
+                    }`}
+                  >
+                    Tự động (Auto)
+                  </button>
+                  {availableQualities.map((level, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => {
+                        if (hlsRef.current) hlsRef.current.currentLevel = idx;
+                      }}
+                      className={`py-1.5 px-2 rounded font-medium transition-colors ${
+                        currentQualityLevel === idx ? 'bg-[#E50914] text-white font-bold' : 'bg-white/5 hover:bg-white/10 text-gray-300'
+                      }`}
+                    >
+                      {level.height}p
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Auto Failover */}
+            <div className="mb-4">
+              <label className="flex items-center justify-between cursor-pointer p-2 bg-white/5 rounded hover:bg-white/10 transition-colors">
+                <div>
+                  <span className="text-white font-medium block">Tự động chuyển nguồn</span>
+                  <span className="text-gray-400 text-[10px]">Tự chuyển Server/Embed khi lỗi</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={enableAutoFailover}
+                    onChange={(e) => setEnableAutoFailover(e.target.checked)}
+                  />
+                  <div className={`block w-8 h-5 rounded-full transition-colors ${enableAutoFailover ? 'bg-[#E50914]' : 'bg-gray-600'}`}></div>
+                  <div className={`dot absolute left-1 top-1 bg-white w-3 h-3 rounded-full transition-transform ${enableAutoFailover ? 'transform translate-x-3' : ''}`}></div>
+                </div>
+              </label>
+            </div>
+
             {/* Auto Audio Preference */}
             <div className="mb-4">
               <span className="text-gray-400 block mb-1.5 font-medium">Tự động chọn nguồn ưu tiên</span>
@@ -1965,15 +2042,14 @@ export const Player: React.FC<PlayerProps> = ({
               {/* Subtitles Source List */}
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-gray-400 uppercase font-semibold text-[10px] tracking-wider">Nguồn Phụ Đề (AIO & SubDL)</span>
+                  <span className="text-gray-400 uppercase font-semibold text-[10px] tracking-wider">Phụ Đề Chính</span>
                   {isLoadingSubtitles && <span className="text-amber-400 animate-pulse text-[10px]">Đang quét...</span>}
                 </div>
 
-                <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                <div className="space-y-1 max-h-24 overflow-y-auto pr-1 mb-3">
                   <button
                     onClick={() => {
                       setActiveSubtitle(null);
-                      setShowSubtitleMenu(false);
                     }}
                     className={`w-full text-left p-2 rounded-lg font-semibold flex items-center justify-between transition-colors ${
                       !activeSubtitle ? 'bg-[#E50914] text-white' : 'bg-white/5 hover:bg-white/10 text-gray-300'
@@ -1990,7 +2066,6 @@ export const Player: React.FC<PlayerProps> = ({
                         key={idx}
                         onClick={() => {
                           setActiveSubtitle(sub);
-                          setShowSubtitleMenu(false);
                         }}
                         className={`w-full text-left p-2 rounded-lg flex items-center justify-between transition-colors ${
                           isCurrent ? 'bg-[#E50914]/20 border border-[#E50914] text-white' : 'bg-white/5 hover:bg-white/10 text-gray-300'
@@ -2007,12 +2082,48 @@ export const Player: React.FC<PlayerProps> = ({
                       </button>
                     );
                   })}
+                </div>
 
-                  {!isLoadingSubtitles && subtitles.length === 0 && (
-                    <div className="text-center py-3 text-gray-400 bg-white/5 rounded-lg text-[11px]">
-                      Không tìm thấy phụ đề tự động. Tải file thủ công bên dưới.
-                    </div>
-                  )}
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-gray-400 uppercase font-semibold text-[10px] tracking-wider">Phụ Đề Phụ (Song Ngữ)</span>
+                </div>
+
+                <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                  <button
+                    onClick={() => {
+                      setActiveSubtitle2(null);
+                    }}
+                    className={`w-full text-left p-2 rounded-lg font-semibold flex items-center justify-between transition-colors ${
+                      !activeSubtitle2 ? 'bg-[#E50914] text-white' : 'bg-white/5 hover:bg-white/10 text-gray-300'
+                    }`}
+                  >
+                    <span>Tắt phụ đề phụ (Off)</span>
+                    {!activeSubtitle2 && <Check className="w-3.5 h-3.5 text-white" />}
+                  </button>
+
+                  {subtitles.map((sub, idx) => {
+                    const isCurrent = activeSubtitle2?.url === sub.url;
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => {
+                          setActiveSubtitle2(sub);
+                        }}
+                        className={`w-full text-left p-2 rounded-lg flex items-center justify-between transition-colors ${
+                          isCurrent ? 'bg-[#E50914]/20 border border-[#E50914] text-white' : 'bg-white/5 hover:bg-white/10 text-gray-300'
+                        }`}
+                      >
+                        <div className="flex flex-col min-w-0 pr-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-white truncate">{sub.langName || sub.lang || 'Tiếng Việt'}</span>
+                            <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/20 text-amber-300 font-mono uppercase">{sub.addon || 'Addon'}</span>
+                          </div>
+                          <span className="text-[10px] text-gray-400 truncate mt-0.5">{sub.id || sub.url}</span>
+                        </div>
+                        {isCurrent && <Check className="w-4 h-4 text-[#E50914] shrink-0" />}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {/* Upload Custom Subtitle */}

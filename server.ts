@@ -100,7 +100,7 @@ app.get("/api/subdl/vtt", async (req, res) => {
 
 // OpenSubtitles API integration
 app.get("/api/opensubtitles", async (req, res) => {
-  const { imdb_id, title } = req.query;
+  const { imdb_id, title, languages = 'en,vi,th,zh,ko,ja' } = req.query;
   const API_KEY = process.env.OPENSUBTITLES_API_KEY || "xhGcgu63tcMZ8VuurzJqXTYAIskDyBAr";
   const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || "Cineflix";
 
@@ -109,7 +109,7 @@ app.get("/api/opensubtitles", async (req, res) => {
   }
 
   const params: any = {
-    languages: 'vi'
+    languages: languages
   };
 
   if (imdb_id && typeof imdb_id === 'string') {
@@ -128,16 +128,53 @@ app.get("/api/opensubtitles", async (req, res) => {
       }
     });
 
-    if (!searchRes.data || !searchRes.data.data || searchRes.data.data.length === 0) {
-      return res.status(404).json({ success: false, error: "No Vietnamese subtitles found" });
+    if (!searchRes.data || !searchRes.data.data) {
+      return res.json({ success: true, subtitles: [] });
     }
 
-    // Get file_id of the first subtitle
-    const fileId = searchRes.data.data[0].attributes.files[0].file_id;
+    // Map search results to a format the frontend can use
+    const subtitles = searchRes.data.data.map((item: any) => {
+      const file = item.attributes.files[0];
+      return {
+        id: `os-${file.file_id}`,
+        file_id: file.file_id,
+        lang: item.attributes.language,
+        langName: `${item.attributes.language_name || item.attributes.language} (OpenSubtitles)`,
+        addon: 'OpenSubtitles',
+        // Use a proxy URL for downloading
+        url: `/api/opensubtitles/download?file_id=${file.file_id}`
+      };
+    });
 
-    // 2. Get download link
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.json({
+      success: true,
+      subtitles: subtitles
+    });
+
+  } catch (error: any) {
+    console.error('OpenSubtitles search error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: "OpenSubtitles API error", 
+      details: error.response?.data || error.message 
+    });
+  }
+});
+
+// Endpoint to get download link for OpenSubtitles
+app.get("/api/opensubtitles/download", async (req, res) => {
+  const { file_id } = req.query;
+  const API_KEY = process.env.OPENSUBTITLES_API_KEY || "xhGcgu63tcMZ8VuurzJqXTYAIskDyBAr";
+  const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || "Cineflix";
+
+  if (!file_id) {
+    return res.status(400).send("Missing file_id");
+  }
+
+  try {
     const downloadRes = await axios.post(`https://api.opensubtitles.com/api/v1/download`, 
-      { file_id: fileId },
+      { file_id: Number(file_id) },
       {
         headers: {
           'Api-Key': API_KEY,
@@ -148,22 +185,19 @@ app.get("/api/opensubtitles", async (req, res) => {
     );
 
     if (!downloadRes.data || !downloadRes.data.link) {
-      return res.status(500).json({ success: false, error: "Failed to get download link" });
+      return res.status(500).send("Failed to get download link");
     }
 
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.json({
-      success: true,
-      subtitle_url: downloadRes.data.link
-    });
+    // Redirect to the actual download link or fetch and serve
+    // For subtitles, we can redirect or proxy. Proxying allows us to convert SRT to VTT if needed.
+    const subtitleUrl = downloadRes.data.link;
+    
+    // Use existing proxy logic to ensure CORS and VTT format
+    res.redirect(`/api/subtitles/proxy?url=${encodeURIComponent(subtitleUrl)}`);
 
   } catch (error: any) {
-    console.error('OpenSubtitles error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      success: false, 
-      error: "OpenSubtitles API error", 
-      details: error.response?.data || error.message 
-    });
+    console.error('OpenSubtitles download error:', error.response?.data || error.message);
+    res.status(500).send("OpenSubtitles download error");
   }
 });
 
@@ -315,143 +349,6 @@ app.get("/api/subtitles/proxy", async (req, res) => {
   } catch (error: any) {
     console.error('Error proxying subtitle:', error.message);
     res.status(500).send(`Failed to fetch subtitle file: ${error.message}`);
-  }
-});
-
-// VSmov Scraper Endpoint
-app.get("/api/scrape-vsmov", async (req, res) => {
-  try {
-    const { url } = req.query;
-    if (!url || typeof url !== 'string') {
-      return res.status(400).json({ error: 'Missing VSmov URL' });
-    }
-
-    // Clean URL: remove markdown formatting [url](url) if present, and trim
-    let cleanUrl = url.trim();
-    const mdMatch = cleanUrl.match(/\[.*?\]\((.*?)\)/);
-    if (mdMatch) {
-      cleanUrl = mdMatch[1];
-    }
-
-    // Regex to validate and parse VSmov URL (v3, v8, v25, etc.)
-    // More flexible regex to handle potential variations (video, embed, or just hash)
-    const vsmovRegex = /streamvsmov\.com\/(?:video|embed|v)\/([a-zA-Z0-9-]+)/i;
-    const match = cleanUrl.match(vsmovRegex);
-    
-    let videoHash = '';
-    if (match) {
-      videoHash = match[1];
-    } else {
-      // Fallback: try to find a hash-like string in the URL if it doesn't match the full pattern
-      const hashMatch = cleanUrl.match(/\/([a-f0-9-]{36})/i);
-      if (hashMatch) {
-        videoHash = hashMatch[1];
-      } else {
-        console.warn('VSmov URL mismatch:', cleanUrl);
-        return res.status(400).json({ 
-          error: 'Invalid VSmov URL format', 
-          received: cleanUrl,
-          hint: 'URL should contain streamvsmov.com/video/HASH or streamvsmov.com/embed/HASH'
-        });
-      }
-    }
-
-    // Ensure URL has protocol and is a valid VSmov URL
-    let finalUrl = cleanUrl;
-    if (!finalUrl.startsWith('http')) {
-      finalUrl = `https://${finalUrl}`;
-    }
-
-    // If it was just a hash or something, reconstruct a valid embed URL
-    if (!finalUrl.includes('streamvsmov.com')) {
-      finalUrl = `https://v8.streamvsmov.com/video/${videoHash}`;
-    }
-
-    let baseUrl = '';
-    try {
-      baseUrl = new URL(finalUrl).origin;
-    } catch (e) {
-      // Fallback baseUrl if URL parsing fails
-      baseUrl = 'https://v8.streamvsmov.com';
-      finalUrl = `${baseUrl}/video/${videoHash}`;
-    }
-
-    const response = await axios.get(finalUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      },
-      timeout: 10000
-    });
-
-    const html = response.data;
-
-    // Extract subtitles array using regex
-    // Try to match the subtitles array in the script tag
-    const subRegex = /subtitles:\s*(\[.*?\])/s;
-    const subMatch = html.match(subRegex);
-    let subtitles = [];
-    if (subMatch) {
-      const subStr = subMatch[1];
-      try {
-        // Try parsing directly first
-        subtitles = JSON.parse(subStr);
-      } catch (e) {
-        try {
-          // If direct parse fails, try to "jsonize" it (handle unquoted keys or single quotes)
-          const jsonized = subStr
-            .replace(/'/g, '"') // replace single quotes with double quotes
-            .replace(/([{,])\s*(\w+)\s*:/g, '$1"$2":'); // quote unquoted keys
-          subtitles = JSON.parse(jsonized);
-        } catch (e2) {
-          console.error('Failed to parse subtitles JSON after cleanup:', subStr);
-        }
-      }
-    }
-
-    // Find Vietnamese subtitle
-    const viSub = subtitles.find((s: any) => 
-      s.code === 'vie' || 
-      (s.name && s.name.toLowerCase().includes('vie')) || 
-      (s.name && s.name.toLowerCase().includes('viet'))
-    );
-
-    const getFullUrl = (u: string) => {
-      if (!u) return '';
-      if (u.startsWith('http')) return u;
-      if (u.startsWith('//')) return `https:${u}`;
-      return `${baseUrl}${u.startsWith('/') ? '' : '/'}${u}`;
-    };
-
-    let subtitleUrl = '';
-    if (viSub && viSub.url) {
-      subtitleUrl = getFullUrl(viSub.url);
-    } else if (subtitles.length > 0) {
-      // Fallback to first subtitle if no Vietnamese
-      subtitleUrl = getFullUrl(subtitles[0].url);
-    }
-
-    // Extract video source link
-    // Pattern from source: playerSource = baseUrl + '/stream/' + videoHash + '/master.m3u8';
-    const videoUrl = `${baseUrl}/stream/${videoHash}/master.m3u8`;
-
-    res.json({
-      video_url: videoUrl,
-      subtitle_url: subtitleUrl,
-      subtitles: subtitles.map((s: any) => ({
-        ...s,
-        full_url: getFullUrl(s.url)
-      }))
-    });
-
-  } catch (error: any) {
-    console.error('VSmov scraping error:', error.message);
-    if (error.response) {
-      return res.status(error.response.status).json({ 
-        error: `VSmov server returned ${error.response.status}`,
-        message: error.message
-      });
-    }
-    res.status(500).json({ error: 'Failed to scrape VSmov', message: error.message });
   }
 });
 
