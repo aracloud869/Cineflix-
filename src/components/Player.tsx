@@ -9,6 +9,7 @@ import {
   ListVideo, X, Search, Smartphone, ArrowLeft, Languages, Upload, Sliders
 } from 'lucide-react';
 import { mapSourceName, detectStreamType, formatDuration, cleanMediaUrl } from '../utils';
+import { getSubtitles } from '../db/firestore';
 
 export interface PlayerEpisode {
   title: string;
@@ -28,6 +29,7 @@ interface PlayerProps {
   currentEpisodeIdx?: number;
   onSelectEpisode?: (index: number) => void;
   onBack?: () => void;
+  imdbId?: string;
 }
 
 export const Player: React.FC<PlayerProps> = ({ 
@@ -41,7 +43,8 @@ export const Player: React.FC<PlayerProps> = ({
   episodes = [],
   currentEpisodeIdx = 0,
   onSelectEpisode,
-  onBack
+  onBack,
+  imdbId
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -73,6 +76,10 @@ export const Player: React.FC<PlayerProps> = ({
   const [isAutoSwitching, setIsAutoSwitching] = useState(false);
   const [playerMode, setPlayerMode] = useState<'auto' | 'embed' | 'native'>('auto');
   const [retryCount, setRetryCount] = useState(0);
+
+  // VSmov specific state
+  const [vsmovData, setVsmovData] = useState<{ video_url: string; subtitle_url: string } | null>(null);
+  const [isScrapingVsmov, setIsScrapingVsmov] = useState(false);
 
   // Auto audio preference (Lồng tiếng, Vietsub, Thuyết minh)
   const [autoAudioPref, setAutoAudioPref] = useState<'all' | 'long-tieng' | 'vietsub' | 'thuyet-minh'>(() => {
@@ -120,14 +127,32 @@ export const Player: React.FC<PlayerProps> = ({
     offset: 0
   });
 
+  // Reset states on stream change
+  useEffect(() => {
+    setActiveSubtitle(null);
+    setSubtitleCues([]);
+    setCurrentSubtitleText('');
+    setVsmovData(null);
+  }, [stream, currentEpisodeIdx]);
+
   // Fetch subtitles from AIO Subtitle & SubDL addons
   useEffect(() => {
     let isMounted = true;
     async function fetchSubs() {
       setIsLoadingSubtitles(true);
       try {
-        const pathParts = window.location.pathname.split('/');
-        const movieId = pathParts[pathParts.indexOf('watch') + 1] || 'tt1234567';
+        const streamUrl = stream.url || stream.externalUrl || '';
+        const isVsmov = /streamvsmov\.com/.test(streamUrl);
+
+        // Improved ID extraction to handle /movie/ID, /watch/ID or other patterns
+        const pathParts = window.location.pathname.split('/').filter(Boolean);
+        const movieId = imdbId || pathParts.find(p => /^tt\d{7,10}$/.test(p)) || pathParts[pathParts.length - 1] || '';
+        
+        if (!movieId) {
+          if (isMounted) setIsLoadingSubtitles(false);
+          return;
+        }
+
         const isSeries = episodes.length > 0;
         const epNum = (currentEpisodeIdx !== undefined ? currentEpisodeIdx + 1 : 1);
 
@@ -140,13 +165,101 @@ export const Player: React.FC<PlayerProps> = ({
           }
         });
 
+        // 0. Fetch user-uploaded subtitles from Firestore
+        let userSubs: any[] = [];
+        try {
+          const dbSubs = await getSubtitles(movieId);
+          userSubs = dbSubs.map((s: any) => ({
+            url: s.fileUrl,
+            lang: 'vie',
+            langName: `Phụ đề người dùng: ${s.name}`,
+            addon: 'User Upload',
+            id: s.id
+          }));
+        } catch (e) {
+          console.warn('Failed to fetch user subtitles:', e);
+        }
+
         if (isMounted && res.data && Array.isArray(res.data.subtitles)) {
-          setSubtitles(res.data.subtitles);
-          const viSub = res.data.subtitles.find((s: any) => (s.lang || '').toLowerCase().includes('vi') || (s.lang || '').toLowerCase().includes('vie'));
-          if (viSub && !activeSubtitle) {
-            setActiveSubtitle(viSub);
-          } else if (res.data.subtitles.length > 0 && !activeSubtitle) {
-            setActiveSubtitle(res.data.subtitles[0]);
+          let allSubs = [...userSubs, ...res.data.subtitles];
+          
+          // Direct SubDL Fetch (User requested specifically)
+          if (movieId && /^tt\d{7,10}$/.test(movieId)) {
+            const subdlVttUrl = `/api/subdl/vtt?imdb_id=${movieId}&type=${isSeries ? 'series' : 'movie'}`;
+            const subdlSub = {
+              url: subdlVttUrl,
+              lang: 'vie',
+              langName: 'Tiếng Việt (SubDL)',
+              addon: 'SubDL API',
+              id: 'subdl-direct'
+            };
+            if (!allSubs.find(s => s.id === 'subdl-direct')) {
+              allSubs = [subdlSub, ...allSubs];
+            }
+          }
+
+          // 2. OpenSubtitles Integration
+          const isImdbId = movieId && /^tt\d{7,10}$/.test(movieId);
+          if (isImdbId || movieTitle) {
+            try {
+              const osRes = await axios.get('/api/opensubtitles', {
+                params: {
+                  imdb_id: isImdbId ? movieId : undefined,
+                  title: movieTitle
+                }
+              });
+              if (osRes.data && osRes.data.success && osRes.data.subtitle_url) {
+                const osSub = {
+                  url: osRes.data.subtitle_url,
+                  lang: 'vie',
+                  langName: 'Tiếng Việt (OpenSubtitles)',
+                  addon: 'OpenSubtitles',
+                  id: 'opensubtitles-direct'
+                };
+                if (!allSubs.find(s => s.id === 'opensubtitles-direct')) {
+                  allSubs = [osSub, ...allSubs];
+                }
+              }
+            } catch (e) {
+              console.warn('OpenSubtitles direct fetch failed:', e);
+            }
+          }
+
+          // If VSmov data is already available, add its sub to the list if not already there
+          if (vsmovData?.subtitle_url) {
+            const vsmovSub = {
+              url: vsmovData.subtitle_url,
+              lang: 'vie',
+              langName: 'Tiếng Việt (VSmov)',
+              addon: 'VSmov',
+              id: 'vsmov-sub'
+            };
+            if (!allSubs.find(s => s.url === vsmovSub.url)) {
+              allSubs = [vsmovSub, ...allSubs];
+            }
+          }
+
+          setSubtitles(allSubs);
+          
+          // Only auto-select if not VSmov or if we already have the VSmov sub in the list
+          const isVsmov = /streamvsmov\.com/.test(stream.url || stream.externalUrl || '');
+          const hasVsmovSub = allSubs.some(s => s.addon === 'VSmov');
+
+          const viSub = allSubs.find((s: any) => (s.lang || '').toLowerCase().includes('vi') || (s.lang || '').toLowerCase().includes('vie'));
+          
+          if (!activeSubtitle) {
+            if (isVsmov) {
+              if (hasVsmovSub && viSub && viSub.addon === 'VSmov') {
+                setActiveSubtitle(viSub);
+              }
+              // If VSmov but sub not ready yet, don't pick a random one
+            } else {
+              if (viSub) {
+                setActiveSubtitle(viSub);
+              } else if (allSubs.length > 0) {
+                setActiveSubtitle(allSubs[0]);
+              }
+            }
           }
         }
       } catch (err) {
@@ -160,7 +273,52 @@ export const Player: React.FC<PlayerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [stream, currentEpisodeIdx]);
+  }, [stream, currentEpisodeIdx, vsmovData]);
+
+  // VSmov Scraper logic
+  useEffect(() => {
+    const streamUrl = stream.url || stream.externalUrl || '';
+    if (!/streamvsmov\.com/.test(streamUrl)) {
+      setVsmovData(null);
+      return;
+    }
+
+    let isMounted = true;
+    async function scrapeVsmov() {
+      setIsScrapingVsmov(true);
+      try {
+        const res = await axios.get('/api/scrape-vsmov', {
+          params: { url: streamUrl }
+        });
+        if (isMounted && res.data) {
+          setVsmovData({
+            video_url: res.data.video_url,
+            subtitle_url: res.data.subtitle_url
+          });
+          
+          // Automatically set VSmov subtitle if found
+          if (res.data.subtitle_url) {
+            setActiveSubtitle({
+              url: res.data.subtitle_url,
+              lang: 'vie',
+              langName: 'Tiếng Việt (VSmov)',
+              addon: 'VSmov',
+              id: 'vsmov-sub'
+            });
+          }
+        }
+      } catch (err) {
+        console.error('VSmov scraping failed:', err);
+      } finally {
+        if (isMounted) setIsScrapingVsmov(false);
+      }
+    }
+
+    scrapeVsmov();
+    return () => {
+      isMounted = false;
+    };
+  }, [stream.url, stream.externalUrl]);
 
   // Load and parse VTT cues when activeSubtitle changes
   useEffect(() => {
@@ -174,9 +332,20 @@ export const Player: React.FC<PlayerProps> = ({
     async function loadSubFile() {
       try {
         if (activeSubtitle.url === 'local') return;
-        const proxyUrl = `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle.url)}`;
-        const res = await axios.get(proxyUrl);
-        const vttText = res.data;
+        
+        let vttText = "";
+        if (activeSubtitle.url.startsWith('text-fallback:')) {
+          vttText = activeSubtitle.url.replace('text-fallback:', '');
+        } else {
+          // Don't proxy internal routes
+          const url = activeSubtitle.url.startsWith('/') 
+            ? activeSubtitle.url 
+            : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle.url)}`;
+            
+          const res = await axios.get(url);
+          vttText = res.data;
+        }
+
         if (!isMounted) return;
 
         const cues = parseVttString(vttText);
@@ -195,25 +364,45 @@ export const Player: React.FC<PlayerProps> = ({
 
   function parseVttString(vttString: string) {
     const cues: { start: number; end: number; text: string }[] = [];
-    const lines = vttString.split(/\r?\n/);
+    if (!vttString) return cues;
+    
+    // Normalize newlines and split
+    const lines = vttString.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
     let i = 0;
+    
+    // Skip WEBVTT header
+    while (i < lines.length && (lines[i].trim() === '' || lines[i].includes('WEBVTT'))) {
+      i++;
+    }
+
     while (i < lines.length) {
       let line = lines[i].trim();
+      
+      // Look for timestamp line
       if (line.includes('-->')) {
         const parts = line.split('-->');
-        const start = parseTs(parts[0].trim());
-        const end = parseTs(parts[1].trim());
-        let textLines = [];
-        i++;
-        while (i < lines.length && lines[i].trim() !== '') {
-          textLines.push(lines[i].trim());
+        if (parts.length >= 2) {
+          const start = parseTs(parts[0].trim());
+          const end = parseTs(parts[1].trim());
+          
+          let textLines = [];
+          i++;
+          // Collect text until empty line or next timestamp
+          while (i < lines.length && lines[i].trim() !== '' && !lines[i].includes('-->')) {
+            textLines.push(lines[i].trim());
+            i++;
+          }
+          
+          if (textLines.length > 0) {
+            cues.push({
+              start,
+              end,
+              text: textLines.join('\n').replace(/<[^>]*>/g, '') // Strip HTML tags
+            });
+          }
+        } else {
           i++;
         }
-        cues.push({
-          start,
-          end,
-          text: textLines.join('\n').replace(/<[^>]*>/g, '')
-        });
       } else {
         i++;
       }
@@ -222,11 +411,22 @@ export const Player: React.FC<PlayerProps> = ({
   }
 
   function parseTs(timeStr: string) {
-    const parts = timeStr.split(':');
-    if (parts.length === 3) {
-      return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2].replace(',', '.'));
-    } else if (parts.length === 2) {
-      return parseFloat(parts[0]) * 60 + parseFloat(parts[1].replace(',', '.'));
+    if (!timeStr) return 0;
+    
+    // Clean up potential prefixes like WEBVTT or cue numbers
+    const cleanTime = timeStr.replace(/[^\d:.,]/g, '').replace(',', '.');
+    const parts = cleanTime.split(':');
+    
+    try {
+      if (parts.length === 3) {
+        return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
+      } else if (parts.length === 2) {
+        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
+      } else if (parts.length === 1) {
+        return parseFloat(parts[0]);
+      }
+    } catch (e) {
+      return 0;
     }
     return 0;
   }
@@ -269,7 +469,13 @@ export const Player: React.FC<PlayerProps> = ({
   const stallTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const currentStreamType = detectStreamType(stream.url || stream.externalUrl);
-  const isEmbed = playerMode === 'embed' || (!stream.url && !!stream.externalUrl) || (playerMode === 'auto' && currentStreamType === 'embed');
+  const streamUrl = stream.url || stream.externalUrl || '';
+  const isVsmov = /streamvsmov\.com/.test(streamUrl);
+  
+  const isEmbed = playerMode === 'embed' || 
+    (!stream.url && !!stream.externalUrl && !isVsmov) || 
+    (playerMode === 'auto' && currentStreamType === 'embed' && !isVsmov);
+  
   const effectiveEmbedUrl = cleanMediaUrl(stream.externalUrl || stream.embedUrl || (currentStreamType === 'embed' ? stream.url : ''));
 
   const resetControlsTimeout = useCallback(() => {
@@ -434,7 +640,17 @@ export const Player: React.FC<PlayerProps> = ({
       hlsRef.current = null;
     }
 
-    const url = cleanMediaUrl(stream.url);
+    // Use VSmov scraped URL if available
+    const streamUrl = stream.url || stream.externalUrl || '';
+    const isVsmov = /streamvsmov\.com/.test(streamUrl);
+    
+    let url = cleanMediaUrl(isVsmov && vsmovData ? vsmovData.video_url : stream.url);
+    
+    // If it's VSmov but data isn't ready yet, wait
+    if (isVsmov && !vsmovData) {
+      return;
+    }
+
     const isMp4 = url.includes('.mp4') || url.includes('.m4v') || url.includes('type=mp4') || url.includes('format=mp4');
     const isHlsStream = !isMp4 && (url.includes('.m3u8') || url.includes('proxy-playlist') || currentStreamType === 'hls');
 
@@ -1002,7 +1218,17 @@ export const Player: React.FC<PlayerProps> = ({
               playsInline
               crossOrigin="anonymous"
               referrerPolicy="no-referrer"
-            />
+            >
+              {activeSubtitle && activeSubtitle.url && activeSubtitle.url !== 'local' && (
+                <track 
+                  kind="captions" 
+                  src={activeSubtitle.url.startsWith('/') ? activeSubtitle.url : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle.url)}`} 
+                  srcLang={activeSubtitle.lang || 'vi'} 
+                  label={activeSubtitle.langName || 'Tiếng Việt'} 
+                  default 
+                />
+              )}
+            </video>
 
             {/* Rotation Toast Badge Overlay */}
             {rotateToast && (

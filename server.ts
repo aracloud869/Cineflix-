@@ -3,22 +3,194 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import axios from "axios";
 
+import AdmZip from "adm-zip";
+
 const app = express();
 const PORT = 3000;
 
 app.use(express.json());
 
+// SubDL API integration
+app.get("/api/subdl/vtt", async (req, res) => {
+  const { imdb_id, type = 'movie' } = req.query;
+  const SUBDL_API_KEY = "subdl_B_aIO1H-jyorIqf4B-DtIA5OUE1EBuapUlJebKMc27g";
+
+  if (!imdb_id || typeof imdb_id !== 'string') {
+    return res.status(400).json({ error: "Missing or invalid imdb_id" });
+  }
+
+  // Only proceed if it looks like an IMDB ID (starts with tt)
+  if (!imdb_id.startsWith('tt')) {
+    return res.status(400).json({ error: "Not a valid IMDB ID (must start with tt)" });
+  }
+
+  try {
+    // 1. Search for Vietnamese subtitles
+    const searchRes = await axios.get(`https://api.subdl.com/api/v1/subtitles`, {
+      params: {
+        api_key: SUBDL_API_KEY,
+        imdb_id: imdb_id,
+        languages: "vi",
+        type: type === 'series' ? 'tv' : 'movie'
+      }
+    });
+
+    if (!searchRes.data || searchRes.data.status === false) {
+      const subdlError = searchRes.data?.error || "Unknown SubDL error";
+      console.warn(`SubDL API could not find media: ${imdb_id} - ${subdlError}`);
+      return res.status(404).json({ error: `SubDL: ${subdlError}`, status: false });
+    }
+
+    if (!searchRes.data.subtitles || searchRes.data.subtitles.length === 0) {
+      return res.status(404).json({ error: "No Vietnamese subtitles found for this IMDB ID" });
+    }
+
+    // Pick the first subtitle (best match usually)
+    const sub = searchRes.data.subtitles[0];
+    if (!sub || !sub.url) {
+      return res.status(404).json({ error: "Subtitle URL not found in response" });
+    }
+
+    // SubDL API returns url path, e.g., /subtitle/12345-vi.zip
+    const downloadUrl = `https://dl.subdl.com${sub.url}`;
+
+    // 2. Download ZIP
+    const zipResponse = await axios.get(downloadUrl, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0'
+      }
+    });
+
+    // 3. Extract SRT and convert to VTT
+    const zip = new AdmZip(Buffer.from(zipResponse.data));
+    const zipEntries = zip.getEntries();
+    
+    // Find first .srt file (prefer srt)
+    let srtEntry = zipEntries.find(entry => entry.entryName.toLowerCase().endsWith('.srt'));
+    let vttEntry = zipEntries.find(entry => entry.entryName.toLowerCase().endsWith('.vtt'));
+    
+    if (!srtEntry && !vttEntry) {
+       return res.status(404).json({ error: "No SRT or VTT file found in ZIP archive" });
+    }
+
+    let vttContent = "";
+    if (vttEntry) {
+      vttContent = vttEntry.getData().toString('utf8');
+      // Ensure it has correct header
+      if (!vttContent.trim().startsWith('WEBVTT')) {
+        vttContent = 'WEBVTT\n\n' + vttContent;
+      }
+    } else if (srtEntry) {
+      const srtContent = srtEntry.getData().toString('utf8');
+      vttContent = srtToVtt(srtContent);
+    }
+
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.send(vttContent);
+
+  } catch (error: any) {
+    console.error('SubDL error:', error.message);
+    const status = error.response ? error.response.status : 500;
+    res.status(status).json({ error: "Failed to process subtitles from SubDL", details: error.message });
+  }
+});
+
+// OpenSubtitles API integration
+app.get("/api/opensubtitles", async (req, res) => {
+  const { imdb_id, title } = req.query;
+  const API_KEY = process.env.OPENSUBTITLES_API_KEY || "xhGcgu63tcMZ8VuurzJqXTYAIskDyBAr";
+  const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || "Cineflix";
+
+  if (!imdb_id && !title) {
+    return res.status(400).json({ success: false, error: "Missing imdb_id or title" });
+  }
+
+  const params: any = {
+    languages: 'vi'
+  };
+
+  if (imdb_id && typeof imdb_id === 'string') {
+    params.imdb_id = imdb_id.startsWith('tt') ? imdb_id.substring(2) : imdb_id;
+  } else if (title && typeof title === 'string') {
+    params.query = title;
+  }
+
+  try {
+    // 1. Search for subtitles
+    const searchRes = await axios.get(`https://api.opensubtitles.com/api/v1/subtitles`, {
+      params,
+      headers: {
+        'Api-Key': API_KEY,
+        'User-Agent': USER_AGENT
+      }
+    });
+
+    if (!searchRes.data || !searchRes.data.data || searchRes.data.data.length === 0) {
+      return res.status(404).json({ success: false, error: "No Vietnamese subtitles found" });
+    }
+
+    // Get file_id of the first subtitle
+    const fileId = searchRes.data.data[0].attributes.files[0].file_id;
+
+    // 2. Get download link
+    const downloadRes = await axios.post(`https://api.opensubtitles.com/api/v1/download`, 
+      { file_id: fileId },
+      {
+        headers: {
+          'Api-Key': API_KEY,
+          'User-Agent': USER_AGENT,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    if (!downloadRes.data || !downloadRes.data.link) {
+      return res.status(500).json({ success: false, error: "Failed to get download link" });
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.json({
+      success: true,
+      subtitle_url: downloadRes.data.link
+    });
+
+  } catch (error: any) {
+    console.error('OpenSubtitles error:', error.response?.data || error.message);
+    res.status(500).json({ 
+      success: false, 
+      error: "OpenSubtitles API error", 
+      details: error.response?.data || error.message 
+    });
+  }
+});
+
 // Helper to convert SRT to WebVTT
 function srtToVtt(srt: string): string {
   if (!srt) return 'WEBVTT\n\n';
   let text = srt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  
+  // Strip BOM if present
   if (text.charCodeAt(0) === 0xFEFF) {
     text = text.slice(1);
   }
-  text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
-  if (!text.trim().startsWith('WEBVTT')) {
+  
+  // If it starts with WEBVTT but might be missing newlines
+  if (text.startsWith('WEBVTT')) {
+    // Check if there's a newline after WEBVTT
+    if (!text.startsWith('WEBVTT\n')) {
+      text = text.replace('WEBVTT', 'WEBVTT\n\n');
+    } else if (!text.startsWith('WEBVTT\n\n')) {
+      text = text.replace('WEBVTT\n', 'WEBVTT\n\n');
+    }
+  } else {
+    // Convert timestamps: 00:00:00,000 -> 00:00:00.000
+    text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
     text = 'WEBVTT\n\n' + text;
   }
+  
   return text;
 }
 
@@ -106,15 +278,23 @@ app.get("/api/subtitles", async (req, res) => {
 app.get("/api/subtitles/proxy", async (req, res) => {
   try {
     const subtitleUrl = req.query.url as string;
-    if (!subtitleUrl) {
-      return res.status(400).send('Missing subtitle url');
+    if (!subtitleUrl || !subtitleUrl.startsWith('http')) {
+      return res.status(400).send('Invalid or missing subtitle url');
+    }
+
+    let referer = '';
+    try {
+      referer = new URL(subtitleUrl).origin;
+    } catch (e) {
+      // Ignore
     }
 
     const response = await axios.get(subtitleUrl, {
       responseType: 'text',
       timeout: 8000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        ...(referer ? { 'Referer': referer } : {})
       }
     });
 
@@ -123,14 +303,155 @@ app.get("/api/subtitles/proxy", async (req, res) => {
       rawData = String(rawData);
     }
 
-    const vttContent = srtToVtt(rawData);
+    // Check if it's already VTT or if it's SRT
+    let vttContent = rawData;
+    if (!rawData.trim().startsWith('WEBVTT')) {
+      vttContent = srtToVtt(rawData);
+    }
 
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(vttContent);
   } catch (error: any) {
     console.error('Error proxying subtitle:', error.message);
-    res.status(500).send('Failed to fetch subtitle file');
+    res.status(500).send(`Failed to fetch subtitle file: ${error.message}`);
+  }
+});
+
+// VSmov Scraper Endpoint
+app.get("/api/scrape-vsmov", async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'Missing VSmov URL' });
+    }
+
+    // Clean URL: remove markdown formatting [url](url) if present, and trim
+    let cleanUrl = url.trim();
+    const mdMatch = cleanUrl.match(/\[.*?\]\((.*?)\)/);
+    if (mdMatch) {
+      cleanUrl = mdMatch[1];
+    }
+
+    // Regex to validate and parse VSmov URL (v3, v8, v25, etc.)
+    // More flexible regex to handle potential variations (video, embed, or just hash)
+    const vsmovRegex = /streamvsmov\.com\/(?:video|embed|v)\/([a-zA-Z0-9-]+)/i;
+    const match = cleanUrl.match(vsmovRegex);
+    
+    let videoHash = '';
+    if (match) {
+      videoHash = match[1];
+    } else {
+      // Fallback: try to find a hash-like string in the URL if it doesn't match the full pattern
+      const hashMatch = cleanUrl.match(/\/([a-f0-9-]{36})/i);
+      if (hashMatch) {
+        videoHash = hashMatch[1];
+      } else {
+        console.warn('VSmov URL mismatch:', cleanUrl);
+        return res.status(400).json({ 
+          error: 'Invalid VSmov URL format', 
+          received: cleanUrl,
+          hint: 'URL should contain streamvsmov.com/video/HASH or streamvsmov.com/embed/HASH'
+        });
+      }
+    }
+
+    // Ensure URL has protocol and is a valid VSmov URL
+    let finalUrl = cleanUrl;
+    if (!finalUrl.startsWith('http')) {
+      finalUrl = `https://${finalUrl}`;
+    }
+
+    // If it was just a hash or something, reconstruct a valid embed URL
+    if (!finalUrl.includes('streamvsmov.com')) {
+      finalUrl = `https://v8.streamvsmov.com/video/${videoHash}`;
+    }
+
+    let baseUrl = '';
+    try {
+      baseUrl = new URL(finalUrl).origin;
+    } catch (e) {
+      // Fallback baseUrl if URL parsing fails
+      baseUrl = 'https://v8.streamvsmov.com';
+      finalUrl = `${baseUrl}/video/${videoHash}`;
+    }
+
+    const response = await axios.get(finalUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 10000
+    });
+
+    const html = response.data;
+
+    // Extract subtitles array using regex
+    // Try to match the subtitles array in the script tag
+    const subRegex = /subtitles:\s*(\[.*?\])/s;
+    const subMatch = html.match(subRegex);
+    let subtitles = [];
+    if (subMatch) {
+      const subStr = subMatch[1];
+      try {
+        // Try parsing directly first
+        subtitles = JSON.parse(subStr);
+      } catch (e) {
+        try {
+          // If direct parse fails, try to "jsonize" it (handle unquoted keys or single quotes)
+          const jsonized = subStr
+            .replace(/'/g, '"') // replace single quotes with double quotes
+            .replace(/([{,])\s*(\w+)\s*:/g, '$1"$2":'); // quote unquoted keys
+          subtitles = JSON.parse(jsonized);
+        } catch (e2) {
+          console.error('Failed to parse subtitles JSON after cleanup:', subStr);
+        }
+      }
+    }
+
+    // Find Vietnamese subtitle
+    const viSub = subtitles.find((s: any) => 
+      s.code === 'vie' || 
+      (s.name && s.name.toLowerCase().includes('vie')) || 
+      (s.name && s.name.toLowerCase().includes('viet'))
+    );
+
+    const getFullUrl = (u: string) => {
+      if (!u) return '';
+      if (u.startsWith('http')) return u;
+      if (u.startsWith('//')) return `https:${u}`;
+      return `${baseUrl}${u.startsWith('/') ? '' : '/'}${u}`;
+    };
+
+    let subtitleUrl = '';
+    if (viSub && viSub.url) {
+      subtitleUrl = getFullUrl(viSub.url);
+    } else if (subtitles.length > 0) {
+      // Fallback to first subtitle if no Vietnamese
+      subtitleUrl = getFullUrl(subtitles[0].url);
+    }
+
+    // Extract video source link
+    // Pattern from source: playerSource = baseUrl + '/stream/' + videoHash + '/master.m3u8';
+    const videoUrl = `${baseUrl}/stream/${videoHash}/master.m3u8`;
+
+    res.json({
+      video_url: videoUrl,
+      subtitle_url: subtitleUrl,
+      subtitles: subtitles.map((s: any) => ({
+        ...s,
+        full_url: getFullUrl(s.url)
+      }))
+    });
+
+  } catch (error: any) {
+    console.error('VSmov scraping error:', error.message);
+    if (error.response) {
+      return res.status(error.response.status).json({ 
+        error: `VSmov server returned ${error.response.status}`,
+        message: error.message
+      });
+    }
+    res.status(500).json({ error: 'Failed to scrape VSmov', message: error.message });
   }
 });
 
