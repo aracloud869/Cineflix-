@@ -42,7 +42,6 @@ export const SOURCES = [
 
 export const GENRES_LIST = [
   { slug: 'hanh-dong', name: 'Hành Động' },
-  { slug: 'the-thao', name: 'Thể Thao' },
   { slug: 'co-trang', name: 'Cổ Trang' },
   { slug: 'tinh-cam', name: 'Tình Cảm' },
   { slug: 'vo-thuat', name: 'Võ Thuật' },
@@ -228,11 +227,11 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
     });
   };
 
-  // 1. If a specific Source is selected (kkphim, nguonc, stp, hh3d, vsmov)
+    // 1. If a specific Source is selected (kkphim, nguonc, stp, hh3d, vsmov)
   if (source) {
     const matchingSources = SOURCES.filter(s => s.id.includes(source));
     const promises = matchingSources.map(s =>
-      axios.get<CatalogResponse>(s.url, { timeout: 12000 })
+      axios.get<CatalogResponse>(s.url, { timeout: 8000 })
         .then(res => (res.data.metas || []).map(meta => {
           const aInfo = detectAudioInfo(meta.name + ' ' + (meta.description || ''), meta.releaseInfo);
           const qInfo = detectQualityInfo(meta.name + ' ' + (meta.description || ''), meta.releaseInfo);
@@ -255,19 +254,6 @@ export async function fetchCategoryMovies(options: CategoryQueryOptions): Promis
         }))
         .catch(() => [])
     );
-
-    // Special case for sports: also fetch Thể Thao genre content
-    if (source === 'sports') {
-      promises.push(
-        axios.get(`https://phimapi.com/v1/api/the-loai/the-thao?page=${page}&limit=36`, { timeout: 10000 })
-          .then(res => (res.data?.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'kkphim')))
-          .catch(() => []),
-        axios.get(`/api/nguonc/films/the-loai/the-thao?page=${page}`, { timeout: 10000 })
-          .then(res => (res.data?.items || []).map((it: any) => convertApiItemToMovie(it, 'movie', 'nguonc')))
-          .catch(() => [])
-      );
-    }
-
     const results = await Promise.all(promises);
     results.forEach(list => addMovies(list));
     if (movieMap.size > 0) return Array.from(movieMap.values());

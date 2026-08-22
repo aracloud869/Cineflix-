@@ -1,11 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { fetchUnifiedCatalog } from '../api';
 import { MovieCard } from '../components/MovieCard';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import { Heart, Clock, Trash2, Film, Play } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { UnifiedMovie } from '../types';
 
 export function MyList() {
   const [favorites, setFavorites] = useLocalStorage<string[]>('cineflix-favorites', []);
@@ -19,32 +18,7 @@ export function MyList() {
   });
 
   const safeFavorites = Array.isArray(favorites) ? favorites : [];
-  const safeHistory = useMemo(() => {
-    if (!Array.isArray(history)) return [];
-    const seen = new Set<string>();
-    const list: any[] = [];
-    
-    // Sort by updatedAt if available, or just traverse
-    const sorted = [...history].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-
-    for (const item of sorted) {
-      if (!item) continue;
-      const movieId = typeof item === 'string' ? item : item.movieId;
-      if (!movieId) continue;
-
-      const movie = movies.find(m => m.id === movieId);
-      const movieName = typeof item === 'object' && item.movieName ? item.movieName : (movie?.name || 'Chi Tiết Phim');
-      
-      // Filter out placeholder names
-      if (movieName === 'Chi Tiết Phim' || movieName?.toLowerCase() === 'chi tiết phim') continue;
-
-      if (!seen.has(movieId)) {
-        seen.add(movieId);
-        list.push(item);
-      }
-    }
-    return list;
-  }, [history, movies]);
+  const safeHistory = Array.isArray(history) ? history : [];
 
   const favoriteMovies = movies.filter(movie => safeFavorites.includes(movie.id));
   
@@ -144,25 +118,46 @@ export function MyList() {
       ) : (
         /* History Tab */
         safeHistory.length > 0 ? (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 sm:gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {safeHistory.map((item: any, idx: number) => {
               const movieId = typeof item === 'string' ? item : item.movieId;
-              const movieFromCatalog = movies.find(m => m.id === movieId);
-              
-              const historyMovie: UnifiedMovie = {
-                id: movieId,
-                name: item.movieName || movieFromCatalog?.name || 'Phim',
-                poster: item.poster || movieFromCatalog?.poster || '',
-                background: item.poster || movieFromCatalog?.poster || '',
-                sourceIds: [movieId],
-                isHistory: true,
-                episodeTitle: item.episodeTitle || 'Bản Đầy Đủ'
-              };
+              const movie = movies.find(m => m.id === movieId);
+              const movieName = typeof item === 'object' && item.movieName ? item.movieName : (movie?.name || 'Chi Tiết Phim');
+              const poster = typeof item === 'object' && item.poster ? item.poster : (movie?.poster || '');
+              const episodeTitle = typeof item === 'object' ? item.episodeTitle : null;
 
               return (
-                <div key={idx} className="flex justify-center">
-                  <MovieCard movie={historyMovie} />
-                </div>
+                <Link
+                  key={idx}
+                  to={`/movie/${encodeURIComponent(movieId)}`}
+                  className="group flex gap-3 p-3 rounded-xl bg-[#141520] border border-white/5 hover:border-red-500/40 transition-all hover:bg-[#1a1b2a]"
+                >
+                  <div className="w-20 aspect-[2/3] rounded-lg overflow-hidden bg-black/50 shrink-0 relative">
+                    <img 
+                      src={poster || 'https://placehold.co/100x150/141520/e50914?text=K-20'} 
+                      alt={movieName}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Play className="w-6 h-6 text-[#E50914] fill-white" />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col justify-center min-w-0">
+                    <h4 className="font-bold text-white text-sm line-clamp-2 group-hover:text-[#E50914] transition-colors">
+                      {movieName}
+                    </h4>
+                    {episodeTitle && (
+                      <span className="text-xs text-[#E50914] font-medium mt-1">
+                        {episodeTitle}
+                      </span>
+                    )}
+                    <span className="text-[11px] text-gray-500 mt-1 flex items-center gap-1">
+                      <Clock className="w-3 h-3" /> Đã xem gần đây
+                    </span>
+                  </div>
+                </Link>
               );
             })}
           </div>

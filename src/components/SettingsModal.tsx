@@ -67,7 +67,7 @@ export function SettingsModal() {
                 </span>
               </div>
               <p className="text-xs text-gray-400 mt-0.5 leading-relaxed">
-                Tắt hiệu ứng mờ (backdrop-blur), cắt bỏ các animation phức tạp & giảm đồ họa nặng, giúp điện thoại yếu chạy mượt mà, không giật lag.
+                Tắt hiệu ứng mờ (backdrop-blur) & giảm đồ họa nặng, giúp điện thoại yếu chạy mượt mà, không giật lag.
               </p>
             </div>
           </div>

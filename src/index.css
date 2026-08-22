@@ -57,20 +57,6 @@ body {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   box-shadow: none !important;
-  animation-duration: 0.001ms !important;
-  animation-iteration-count: 1 !important;
-  transition-duration: 0.001ms !important;
-}
-
-.lite-mode .group:hover, 
-.lite-mode .hover\:scale-105:hover,
-.lite-mode .hover\:scale-\[1\.03\]:hover {
-  transform: none !important;
-}
-
-.lite-mode .animate-pulse {
-  animation: none !important;
-  background-color: rgba(255, 255, 255, 0.05) !important;
 }
 
 .lite-mode .backdrop-blur-xl,

@@ -84,46 +84,6 @@ export const Player: React.FC<PlayerProps> = ({
   const [playerMode, setPlayerMode] = useState<'auto' | 'embed' | 'native'>('auto');
   const [retryCount, setRetryCount] = useState(0);
 
-  // Resume Progress Keys
-  const resumeKey = useMemo(() => {
-    if (!propMovieId) return null;
-    return `resume_${propMovieId}_${currentEpisodeIdx}`;
-  }, [propMovieId, currentEpisodeIdx]);
-
-  // Handle Resuming Time
-  const hasResumedRef = useRef(false);
-  useEffect(() => {
-    hasResumedRef.current = false;
-  }, [resumeKey]);
-
-  useEffect(() => {
-    if (resumeKey && videoRef.current && duration > 0 && !hasResumedRef.current) {
-      const savedTime = localStorage.getItem(resumeKey);
-      if (savedTime) {
-        const time = parseFloat(savedTime);
-        if (time > 10 && time < duration - 10) {
-          videoRef.current.currentTime = time;
-          setCurrentTime(time);
-          console.log(`[Player] Resumed to ${time}s`);
-        }
-      }
-      hasResumedRef.current = true;
-    }
-  }, [resumeKey, duration]);
-
-  // Periodic Save Progress
-  useEffect(() => {
-    if (!isPlaying || !resumeKey || currentTime <= 10) return;
-
-    const interval = setInterval(() => {
-      if (currentTime > 10 && duration > 0 && currentTime < duration - 10) {
-        localStorage.setItem(resumeKey, currentTime.toString());
-      }
-    }, 10000); // Save every 10s
-
-    return () => clearInterval(interval);
-  }, [isPlaying, resumeKey, currentTime, duration]);
-
   // Auto audio preference (Lồng tiếng, Vietsub, Thuyết minh)
   const [autoAudioPref, setAutoAudioPref] = useState<'all' | 'long-tieng' | 'vietsub' | 'thuyet-minh'>(() => {
     return (localStorage.getItem('auto_audio_pref') as any) || 'all';
@@ -352,29 +312,16 @@ export const Player: React.FC<PlayerProps> = ({
             : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle.url)}`;
             
           const res = await axios.get(url);
-          const data = res.data;
-          vttText = typeof data === 'string' ? data : (typeof data === 'object' ? JSON.stringify(data) : String(data));
+          vttText = res.data;
         }
 
         if (!isMounted) return;
 
-        if (!vttText || vttText.trim().length < 10) {
-          throw new Error('Empty or invalid subtitle content');
-        }
-
         const cues = parseVttString(vttText);
         setSubtitleCues(cues);
-        
-        if (cues.length === 0) {
-           console.warn('No subtitle cues parsed from:', activeSubtitle.url);
-        }
       } catch (err) {
         console.error('Error loading subtitle file:', err);
-        setSubtitleCues([{
-          start: 0,
-          end: 10,
-          text: '[Lỗi tải phụ đề: Vui lòng thử chọn nguồn phụ đề khác hoặc tải lại trang]'
-        }]);
+        setSubtitleCues([]);
       }
     }
 
@@ -407,15 +354,10 @@ export const Player: React.FC<PlayerProps> = ({
             : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle2.url)}`;
             
           const res = await axios.get(url);
-          const data = res.data;
-          vttText = typeof data === 'string' ? data : (typeof data === 'object' ? JSON.stringify(data) : String(data));
+          vttText = res.data;
         }
 
         if (!isMounted) return;
-
-        if (!vttText || vttText.trim().length < 10) {
-          throw new Error('Empty or invalid secondary subtitle content');
-        }
 
         const cues = parseVttString(vttText);
         setSubtitleCues2(cues);
@@ -1055,11 +997,6 @@ export const Player: React.FC<PlayerProps> = ({
     setCurrentTime(video.currentTime);
     setDuration(video.duration || 0);
 
-    // Occasional save on important updates
-    if (resumeKey && video.currentTime > 0 && Math.floor(video.currentTime) % 30 === 0) {
-      localStorage.setItem(resumeKey, video.currentTime.toString());
-    }
-
     if (video.buffered.length > 0) {
       const bufferedEnd = video.buffered.end(video.buffered.length - 1);
       setBuffered(bufferedEnd);
@@ -1374,7 +1311,7 @@ export const Player: React.FC<PlayerProps> = ({
 
             {/* CUSTOM SUBTITLE OVERLAY */}
             {(currentSubtitleText || currentSubtitleText2) && !isEmbed && !useNativeControls && (
-              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-40 pointer-events-none flex flex-col items-center gap-1">
+              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-30 pointer-events-none flex flex-col items-center gap-1">
                 {currentSubtitleText && (
                   <div 
                     className={`px-3.5 py-1.5 rounded-xl max-w-2xl text-center leading-relaxed transition-all ${

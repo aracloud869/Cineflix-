@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import { createServer as createViteServer } from "vite";
 import axios from "axios";
 
 import AdmZip from "adm-zip";
@@ -32,19 +33,14 @@ class SimpleMemoryCache<T> {
 }
 
 // Helper to make axios requests with retry on 429 (rate limiting)
-async function axiosGetWithRetry(url: string, config: any = {}, retries = 5, delay = 2000): Promise<any> {
+async function axiosGetWithRetry(url: string, config: any = {}, retries = 3, delay = 1000): Promise<any> {
   try {
     return await axios.get(url, config);
   } catch (error: any) {
     const status = error.response ? error.response.status : null;
-    // Retry on 429 (Rate Limit) or 503 (Service Unavailable)
-    if ((status === 429 || status === 503) && retries > 0) {
-      // Add jitter to delay: delay +/- 20%
-      const jitter = delay * 0.2 * (Math.random() * 2 - 1);
-      const finalDelay = delay + jitter;
-      
-      console.warn(`[Axios Retry] Hit ${status} on ${url}. Retrying in ${Math.round(finalDelay)}ms... (${retries} retries left)`);
-      await new Promise(resolve => setTimeout(resolve, finalDelay));
+    if (status === 429 && retries > 0) {
+      console.warn(`[Axios Retry] Hit 429 on ${url}. Retrying in ${delay}ms... (${retries} retries left)`);
+      await new Promise(resolve => setTimeout(resolve, delay));
       return axiosGetWithRetry(url, config, retries - 1, delay * 2);
     }
     throw error;
@@ -413,8 +409,6 @@ app.get("/api/opensubtitles/download", async (req, res) => {
 // Helper to convert SRT to WebVTT
 function srtToVtt(srt: string): string {
   if (!srt) return 'WEBVTT\n\n';
-  
-  // Normalize newlines
   let text = srt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   
   // Strip BOM if present
@@ -422,20 +416,19 @@ function srtToVtt(srt: string): string {
     text = text.slice(1);
   }
   
-  // If it's already VTT, just ensure it has a proper header
-  if (text.trim().startsWith('WEBVTT')) {
-    if (!text.startsWith('WEBVTT\n\n')) {
-      text = text.replace(/^WEBVTT\n*/, 'WEBVTT\n\n');
+  // If it starts with WEBVTT but might be missing newlines
+  if (text.startsWith('WEBVTT')) {
+    // Check if there's a newline after WEBVTT
+    if (!text.startsWith('WEBVTT\n')) {
+      text = text.replace('WEBVTT', 'WEBVTT\n\n');
+    } else if (!text.startsWith('WEBVTT\n\n')) {
+      text = text.replace('WEBVTT\n', 'WEBVTT\n\n');
     }
-    return text;
+  } else {
+    // Convert timestamps: Supporting single/double-digit hours, and comma/dot milliseconds
+    text = text.replace(/(\d{1,2}:\d{2}:\d{2})[,.](\d{1,3})/g, '$1.$2');
+    text = 'WEBVTT\n\n' + text;
   }
-
-  // Convert SRT to VTT
-  // 1. Convert timestamp format: 00:00:00,000 -> 00:00:00.000
-  text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
-  
-  // 2. Add WEBVTT header
-  text = 'WEBVTT\n\n' + text;
   
   return text;
 }
@@ -655,14 +648,14 @@ app.get("/api/subtitles", async (req, res) => {
 
       const SUBDL_API_KEY = "subdl_B_aIO1H-jyorIqf4B-DtIA5OUE1EBuapUlJebKMc27g";
       try {
-        const searchRes = await axiosGetWithRetry(`https://api.subdl.com/api/v1/subtitles`, {
+        const searchRes = await axios.get(`https://api.subdl.com/api/v1/subtitles`, {
           params: {
             api_key: SUBDL_API_KEY,
             imdb_id: resolvedImdbId,
             languages: "vi,en",
             type: type === 'series' ? 'tv' : 'movie'
           },
-          timeout: 6000
+          timeout: 4000
         });
 
         if (searchRes.data && searchRes.data.status !== false && Array.isArray(searchRes.data.subtitles)) {
@@ -813,21 +806,17 @@ app.get("/api/subtitles/proxy", async (req, res) => {
     }
 
     const response = await axiosGetWithRetry(subtitleUrl, {
-      responseType: 'arraybuffer', // Use arraybuffer to handle potential encoding issues
-      timeout: 10000,
+      responseType: 'text',
+      timeout: 8000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         ...(referer ? { 'Referer': referer } : {})
       }
     });
 
-    // Try to decode as UTF-8
-    let rawData = Buffer.from(response.data).toString('utf8');
-    
-    // Check if it looks garbled (contains null bytes or weird sequences)
-    if (rawData.includes('\u0000')) {
-       // Fallback to a safer string conversion if it looks like binary or weird encoding
-       rawData = Buffer.from(response.data).toString('latin1');
+    let rawData = response.data;
+    if (typeof rawData !== 'string') {
+      rawData = String(rawData);
     }
 
     // Check if it's already VTT or if it's SRT
@@ -1040,11 +1029,9 @@ app.get("/api/m3u8-proxy", async (req, res) => {
   }
 });
 
-export default app;
-
 async function startServer() {
+
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1058,13 +1045,9 @@ async function startServer() {
     });
   }
 
-  // Only start the listening server if we are not in a serverless environment (like Vercel)
-  // or if we are in development mode.
-  if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
-  }
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
 }
 
 startServer();
