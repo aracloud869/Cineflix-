@@ -352,16 +352,29 @@ export const Player: React.FC<PlayerProps> = ({
             : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle.url)}`;
             
           const res = await axios.get(url);
-          vttText = res.data;
+          const data = res.data;
+          vttText = typeof data === 'string' ? data : (typeof data === 'object' ? JSON.stringify(data) : String(data));
         }
 
         if (!isMounted) return;
 
+        if (!vttText || vttText.trim().length < 10) {
+          throw new Error('Empty or invalid subtitle content');
+        }
+
         const cues = parseVttString(vttText);
         setSubtitleCues(cues);
+        
+        if (cues.length === 0) {
+           console.warn('No subtitle cues parsed from:', activeSubtitle.url);
+        }
       } catch (err) {
         console.error('Error loading subtitle file:', err);
-        setSubtitleCues([]);
+        setSubtitleCues([{
+          start: 0,
+          end: 10,
+          text: '[Lỗi tải phụ đề: Vui lòng thử chọn nguồn phụ đề khác hoặc tải lại trang]'
+        }]);
       }
     }
 
@@ -394,10 +407,15 @@ export const Player: React.FC<PlayerProps> = ({
             : `/api/subtitles/proxy?url=${encodeURIComponent(activeSubtitle2.url)}`;
             
           const res = await axios.get(url);
-          vttText = res.data;
+          const data = res.data;
+          vttText = typeof data === 'string' ? data : (typeof data === 'object' ? JSON.stringify(data) : String(data));
         }
 
         if (!isMounted) return;
+
+        if (!vttText || vttText.trim().length < 10) {
+          throw new Error('Empty or invalid secondary subtitle content');
+        }
 
         const cues = parseVttString(vttText);
         setSubtitleCues2(cues);
@@ -1356,7 +1374,7 @@ export const Player: React.FC<PlayerProps> = ({
 
             {/* CUSTOM SUBTITLE OVERLAY */}
             {(currentSubtitleText || currentSubtitleText2) && !isEmbed && !useNativeControls && (
-              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-30 pointer-events-none flex flex-col items-center gap-1">
+              <div className="absolute bottom-16 sm:bottom-20 left-4 right-4 text-center z-40 pointer-events-none flex flex-col items-center gap-1">
                 {currentSubtitleText && (
                   <div 
                     className={`px-3.5 py-1.5 rounded-xl max-w-2xl text-center leading-relaxed transition-all ${

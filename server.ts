@@ -413,6 +413,8 @@ app.get("/api/opensubtitles/download", async (req, res) => {
 // Helper to convert SRT to WebVTT
 function srtToVtt(srt: string): string {
   if (!srt) return 'WEBVTT\n\n';
+  
+  // Normalize newlines
   let text = srt.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   
   // Strip BOM if present
@@ -420,19 +422,20 @@ function srtToVtt(srt: string): string {
     text = text.slice(1);
   }
   
-  // If it starts with WEBVTT but might be missing newlines
-  if (text.startsWith('WEBVTT')) {
-    // Check if there's a newline after WEBVTT
-    if (!text.startsWith('WEBVTT\n')) {
-      text = text.replace('WEBVTT', 'WEBVTT\n\n');
-    } else if (!text.startsWith('WEBVTT\n\n')) {
-      text = text.replace('WEBVTT\n', 'WEBVTT\n\n');
+  // If it's already VTT, just ensure it has a proper header
+  if (text.trim().startsWith('WEBVTT')) {
+    if (!text.startsWith('WEBVTT\n\n')) {
+      text = text.replace(/^WEBVTT\n*/, 'WEBVTT\n\n');
     }
-  } else {
-    // Convert timestamps: Supporting single/double-digit hours, and comma/dot milliseconds
-    text = text.replace(/(\d{1,2}:\d{2}:\d{2})[,.](\d{1,3})/g, '$1.$2');
-    text = 'WEBVTT\n\n' + text;
+    return text;
   }
+
+  // Convert SRT to VTT
+  // 1. Convert timestamp format: 00:00:00,000 -> 00:00:00.000
+  text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+  
+  // 2. Add WEBVTT header
+  text = 'WEBVTT\n\n' + text;
   
   return text;
 }
@@ -810,17 +813,21 @@ app.get("/api/subtitles/proxy", async (req, res) => {
     }
 
     const response = await axiosGetWithRetry(subtitleUrl, {
-      responseType: 'text',
-      timeout: 8000,
+      responseType: 'arraybuffer', // Use arraybuffer to handle potential encoding issues
+      timeout: 10000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         ...(referer ? { 'Referer': referer } : {})
       }
     });
 
-    let rawData = response.data;
-    if (typeof rawData !== 'string') {
-      rawData = String(rawData);
+    // Try to decode as UTF-8
+    let rawData = Buffer.from(response.data).toString('utf8');
+    
+    // Check if it looks garbled (contains null bytes or weird sequences)
+    if (rawData.includes('\u0000')) {
+       // Fallback to a safer string conversion if it looks like binary or weird encoding
+       rawData = Buffer.from(response.data).toString('latin1');
     }
 
     // Check if it's already VTT or if it's SRT
