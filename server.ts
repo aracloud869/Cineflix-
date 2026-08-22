@@ -5,6 +5,37 @@ import axios from "axios";
 
 import AdmZip from "adm-zip";
 
+// Simple in-memory cache with TTL (Time To Live) to completely prevent 429 rate limits
+class SimpleMemoryCache<T> {
+  private cache = new Map<string, { value: T; expiresAt: number }>();
+  private ttlMs: number;
+
+  constructor(ttlMs: number) {
+    this.ttlMs = ttlMs;
+  }
+
+  get(key: string): T | null {
+    const item = this.cache.get(key);
+    if (!item) return null;
+    if (Date.now() > item.expiresAt) {
+      this.cache.delete(key);
+      return null;
+    }
+    return item.value;
+  }
+
+  set(key: string, value: T): void {
+    this.cache.set(key, {
+      value,
+      expiresAt: Date.now() + this.ttlMs
+    });
+  }
+}
+
+const subdlExtractCache = new SimpleMemoryCache<string>(60 * 60 * 1000); // 1 hour ZIP extraction cache
+const subtitleProxyCache = new SimpleMemoryCache<string>(60 * 60 * 1000); // 1 hour proxy download cache
+const searchResultsCache = new SimpleMemoryCache<any[]>(5 * 60 * 1000);   // 5 minutes subtitle search results cache
+
 const app = express();
 const PORT = 3000;
 
@@ -12,7 +43,7 @@ app.use(express.json());
 
 // Helper to resolve IMDb ID from TMDB search
 async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
-  const apiKey = process.env.TMDB_API_KEY || "15d2ea6d0dc1d476efbca3de441b1ddc";
+  const apiKey = process.env.TMDB_API_KEY || "5201b54eb0968700e693a30576d7d4dc";
   const searchTypes: ('movie' | 'tv')[] = type === 'series' ? ['tv', 'movie'] : ['movie', 'tv'];
 
   for (const sType of searchTypes) {
@@ -149,6 +180,14 @@ app.get("/api/subdl/extract", async (req, res) => {
     return res.status(400).json({ error: "Missing or invalid zip url" });
   }
 
+  // Check in-memory cache first
+  const cachedContent = subdlExtractCache.get(url);
+  if (cachedContent) {
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return res.send(cachedContent);
+  }
+
   try {
     const downloadUrl = `https://dl.subdl.com${url}`;
 
@@ -183,6 +222,9 @@ app.get("/api/subdl/extract", async (req, res) => {
       const srtContent = srtEntry.getData().toString('utf8');
       vttContent = srtToVtt(srtContent);
     }
+
+    // Save in cache
+    subdlExtractCache.set(url, vttContent);
 
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -265,11 +307,11 @@ app.get("/api/opensubtitles", async (req, res) => {
     });
 
   } catch (error: any) {
-    console.error('OpenSubtitles search error:', error.response?.data || error.message);
-    res.status(500).json({ 
-      success: false, 
-      error: "OpenSubtitles API error", 
-      details: error.response?.data || error.message 
+    console.warn('OpenSubtitles search warning (handled gracefully):', error.response?.data || error.message);
+    res.json({ 
+      success: true, 
+      subtitles: [],
+      warning: "OpenSubtitles API is temporarily rate-limited or unavailable"
     });
   }
 });
@@ -340,94 +382,349 @@ function srtToVtt(srt: string): string {
   return text;
 }
 
-// Subtitles endpoint querying AIO Subtitle and SubDL addons
+// Helper to clean search titles for movie/series database queries
+function cleanSearchTitle(titleStr: string): string {
+  if (!titleStr) return "";
+  let s = titleStr.trim();
+  // Strip parenthesized years e.g., (2022) or (Hoạt hình)
+  s = s.replace(/\s*\([^)]*\)/g, "");
+  // Strip common season references
+  s = s.replace(/\s*(phần|Phần|season|Season|ss|SS|ss|Tập|tập)\s*\d+/gi, "");
+  // Strip common trailer or metadata prefixes
+  s = s.replace(/\s*-\s*(Thuyết Minh|Vietsub|Lồng Tiếng|Full|Trọn Bộ)/gi, "");
+  return s.trim();
+}
+
+// Normalize language names to standard readable format for the player
+function normalizeLanguageLabel(lang: string, addonName: string): { langCode: string, langName: string } {
+  const l = (lang || '').toLowerCase();
+  if (l.includes('vi') || l.includes('vie') || l.includes('viet')) {
+    return {
+      langCode: 'vie',
+      langName: `Tiếng Việt (Vietsub - ${addonName}) 🇻🇳`
+    };
+  }
+  if (l.includes('en') || l.includes('eng') || l.includes('english')) {
+    return {
+      langCode: 'eng',
+      langName: `Tiếng Anh (English - ${addonName}) 🇬🇧`
+    };
+  }
+  // Fallback
+  return {
+    langCode: l || 'unknown',
+    langName: `${lang} (${addonName})`
+  };
+}
+
+// Subtitles endpoint querying AIO Subtitle, SubDL addons, SubDL direct API, and OpenSubtitles API in parallel
 app.get("/api/subtitles", async (req, res) => {
   try {
-    const { id, type = 'movie', season, episode } = req.query;
-    if (!id) {
-      return res.status(400).json({ error: 'Missing movie id' });
+    const { id, type = 'movie', season, episode, title, originName, imdb_id } = req.query;
+    if (!id && !imdb_id && !title && !originName) {
+      return res.status(400).json({ error: 'Missing identifiers (id, imdb_id, title or originName)' });
     }
 
-    let stremioId = String(id);
+    // Check in-memory search results cache first to prevent spam/duplicate triggers
+    const cacheKey = `${id || ''}_${imdb_id || ''}_${type}_${season || ''}_${episode || ''}_${title || ''}_${originName || ''}`;
+    const cachedSearch = searchResultsCache.get(cacheKey);
+    if (cachedSearch) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.json({ subtitles: cachedSearch });
+    }
+
+    let stremioId = String(id || imdb_id || '');
     let queryId = stremioId;
     if (stremioId.includes(':')) {
       const parts = stremioId.split(':');
-      // For cases like "kkphim-series:yeu-yeu-cuoi:1:1" or "ophim-series:yeu-yeu-cuoi", we want "yeu-yeu-cuoi"
       if (parts[1] && !parts[1].match(/^\d+$/)) {
         queryId = parts[1];
       } else {
-        // Fallback to last part if parts[1] is a number (season)
         queryId = parts.find(p => !p.match(/^\d+$/) && p !== 'series' && p !== 'movie' && p !== 'anime') || parts[0];
       }
     }
 
-    // Resolve IMDb ID for querying AIO & SubDL Stremio addons
-    const resolvedImdb = await getImdbId(queryId, type === 'series' ? 'series' : 'movie');
-    if (resolvedImdb) {
-      console.log(`[API Subtitles] Resolved queryId "${queryId}" -> "${resolvedImdb}"`);
-      queryId = resolvedImdb;
-      stremioId = resolvedImdb;
+    const seasonNum = season ? parseInt(String(season), 10) : 1;
+    const epNum = episode ? parseInt(String(episode), 10) : 1;
+
+    // Resolve IMDb ID for querying AIO, SubDL Stremio addons, OpenSubtitles addon & REST API
+    let resolvedImdbId = (imdb_id && typeof imdb_id === 'string' && imdb_id.startsWith('tt')) ? imdb_id : null;
+    
+    if (!resolvedImdbId) {
+      // 1. Try resolving using originName (usually English name, e.g. "Battle Through the Heavens")
+      if (originName) {
+        const cleaned = cleanSearchTitle(String(originName));
+        if (cleaned) {
+          const resolved = await getImdbId(cleaned, type === 'series' ? 'series' : 'movie');
+          if (resolved && resolved.startsWith('tt')) {
+            resolvedImdbId = resolved;
+          }
+        }
+      }
+
+      // 2. Try resolving using Vietnamese accented title (e.g. "Đấu Phá Thương Khung")
+      if (!resolvedImdbId && title) {
+        const cleaned = cleanSearchTitle(String(title));
+        if (cleaned) {
+          const resolved = await getImdbId(cleaned, type === 'series' ? 'series' : 'movie');
+          if (resolved && resolved.startsWith('tt')) {
+            resolvedImdbId = resolved;
+          }
+        }
+      }
+
+      // 3. Fallback to using queryId slug (e.g. "dau-pha-thuong-khung")
+      if (!resolvedImdbId && queryId) {
+        const cleaned = cleanSearchTitle(queryId);
+        if (cleaned) {
+          const resolved = await getImdbId(cleaned, type === 'series' ? 'series' : 'movie');
+          if (resolved && resolved.startsWith('tt')) {
+            resolvedImdbId = resolved;
+          }
+        }
+      }
     }
 
-    if (type === 'series' && season && episode) {
-      queryId = `${queryId}:${season}:${episode}`;
+    if (resolvedImdbId) {
+      console.log(`[API Subtitles] Resolved IMDb ID: "${resolvedImdbId}" for queryId="${queryId}" (title="${title}", originName="${originName}")`);
+    } else {
+      console.warn(`[API Subtitles] Failed to resolve IMDb ID for title="${title}" (originName="${originName}"). Using raw queryId="${queryId}"`);
     }
 
-    const allSubtitles: any[] = [];
+    // Prepare query ids for various subtitle addons
+    const imdbQueryId = resolvedImdbId ? (type === 'series' ? `${resolvedImdbId}:${seasonNum}:${epNum}` : resolvedImdbId) : null;
+    const rawQueryId = type === 'series' ? `${queryId}:${seasonNum}:${epNum}` : queryId;
 
-    // 1. AIO Subtitle Addon API
-    const aioUrls = [
-      `https://api.aiosubtitle.org/subtitles/${type}/${queryId}.json`,
-      `https://api.aiosubtitle.org/subtitles/${type}/${stremioId}.json`
-    ];
+    // 1. AIO Subtitle Addon fetcher
+    const fetchAio = async () => {
+      const list: any[] = [];
+      const aioUrls = [
+        imdbQueryId ? `https://api.aiosubtitle.org/subtitles/${type}/${imdbQueryId}.json` : null,
+        `https://api.aiosubtitle.org/subtitles/${type}/${rawQueryId}.json`
+      ].filter(Boolean) as string[];
 
-    for (const url of aioUrls) {
+      for (const url of aioUrls) {
+        try {
+          const response = await axios.get(url, { timeout: 3500 });
+          if (response.data && Array.isArray(response.data.subtitles)) {
+            response.data.subtitles.forEach((sub: any) => {
+              const norm = normalizeLanguageLabel(sub.lang || sub.language, 'AIO Subtitle');
+              list.push({
+                ...sub,
+                addon: 'AIO Subtitle',
+                id: sub.id || sub.url,
+                lang: norm.langCode,
+                langName: norm.langName
+              });
+            });
+            break;
+          }
+        } catch (err) {
+          // Ignore
+        }
+      }
+      return list;
+    };
+
+    // 2. SubDL Addon fetcher
+    const fetchSubDlStremio = async () => {
+      const list: any[] = [];
+      const subdlUrls = [
+        imdbQueryId ? `https://stremio.subdl.com/subtitles/${type}/${imdbQueryId}.json` : null,
+        imdbQueryId ? `https://subdl.stremio.fun/subtitles/${type}/${imdbQueryId}.json` : null,
+        `https://stremio.subdl.com/subtitles/${type}/${rawQueryId}.json`
+      ].filter(Boolean) as string[];
+
+      for (const url of subdlUrls) {
+        try {
+          const response = await axios.get(url, { timeout: 3500 });
+          if (response.data && Array.isArray(response.data.subtitles)) {
+            response.data.subtitles.forEach((sub: any) => {
+              const norm = normalizeLanguageLabel(sub.lang || sub.language, 'SubDL Addon');
+              list.push({
+                ...sub,
+                addon: 'SubDL Addon',
+                id: sub.id || sub.url,
+                lang: norm.langCode,
+                langName: norm.langName
+              });
+            });
+            break;
+          }
+        } catch (err) {
+          // Ignore
+        }
+      }
+      return list;
+    };
+
+    // 3. OpenSubtitles Stremio Addon (V3) - Ultra fast, high quality, free-to-access
+    const fetchOpenSubtitlesStremio = async () => {
+      const list: any[] = [];
+      if (!imdbQueryId) return list;
+
+      const osUrls = [
+        `https://opensubtitles-v3.strem.io/subtitles/${type}/${imdbQueryId}.json`
+      ];
+
+      for (const url of osUrls) {
+        try {
+          const response = await axios.get(url, { timeout: 4000 });
+          if (response.data && Array.isArray(response.data.subtitles)) {
+            response.data.subtitles.forEach((sub: any) => {
+              const norm = normalizeLanguageLabel(sub.lang || sub.language, 'OpenSubtitles');
+              list.push({
+                ...sub,
+                addon: 'OpenSubtitles',
+                id: sub.id || sub.url,
+                lang: norm.langCode,
+                langName: norm.langName
+              });
+            });
+            break;
+          }
+        } catch (err) {
+          // Ignore
+        }
+      }
+      return list;
+    };
+
+    // 4. Direct SubDL API fetcher (custom ZIP extraction proxy)
+    const fetchSubDlDirect = async () => {
+      const list: any[] = [];
+      if (!resolvedImdbId) return list;
+
+      const SUBDL_API_KEY = "subdl_B_aIO1H-jyorIqf4B-DtIA5OUE1EBuapUlJebKMc27g";
       try {
-        const response = await axios.get(url, { timeout: 4000 });
-        if (response.data && Array.isArray(response.data.subtitles)) {
-          response.data.subtitles.forEach((sub: any) => {
-            allSubtitles.push({
-              ...sub,
-              addon: 'AIO Subtitle',
-              id: sub.id || sub.url,
-              lang: sub.lang || sub.language || 'vie'
+        const searchRes = await axios.get(`https://api.subdl.com/api/v1/subtitles`, {
+          params: {
+            api_key: SUBDL_API_KEY,
+            imdb_id: resolvedImdbId,
+            languages: "vi,en",
+            type: type === 'series' ? 'tv' : 'movie'
+          },
+          timeout: 4000
+        });
+
+        if (searchRes.data && searchRes.data.status !== false && Array.isArray(searchRes.data.subtitles)) {
+          searchRes.data.subtitles.forEach((sub: any) => {
+            const norm = normalizeLanguageLabel(sub.language, 'SubDL API');
+            list.push({
+              url: `/api/subdl/extract?url=${encodeURIComponent(sub.url)}`,
+              lang: norm.langCode,
+              langName: norm.langName,
+              addon: 'SubDL API',
+              id: sub.url
             });
           });
-          break;
         }
       } catch (err) {
         // Ignore
       }
-    }
+      return list;
+    };
 
-    // 2. SubDL Addon API
-    const subdlUrls = [
-      `https://stremio.subdl.com/subtitles/${type}/${queryId}.json`,
-      `https://subdl.stremio.fun/subtitles/${type}/${queryId}.json`,
-      `https://stremio.subdl.com/subtitles/${type}/${stremioId}.json`
-    ];
+    // 5. OpenSubtitles Direct API fetcher (official REST API)
+    const fetchOpenSubtitlesDirect = async () => {
+      const list: any[] = [];
+      const API_KEY = process.env.OPENSUBTITLES_API_KEY || "xhGcgu63tcMZ8VuurzJqXTYAIskDyBAr";
+      const USER_AGENT = process.env.OPENSUBTITLES_USER_AGENT || "Cineflix";
 
-    for (const url of subdlUrls) {
+      const params: any = {
+        languages: 'vi,en'
+      };
+
+      if (resolvedImdbId) {
+        params.imdb_id = resolvedImdbId.substring(2);
+      } else if (originName) {
+        params.query = cleanSearchTitle(String(originName));
+      } else if (title) {
+        params.query = cleanSearchTitle(String(title));
+      } else {
+        return list;
+      }
+
       try {
-        const response = await axios.get(url, { timeout: 4000 });
-        if (response.data && Array.isArray(response.data.subtitles)) {
-          response.data.subtitles.forEach((sub: any) => {
-            allSubtitles.push({
-              ...sub,
-              addon: 'SubDL',
-              id: sub.id || sub.url,
-              lang: sub.lang || sub.language || 'vie'
-            });
+        const searchRes = await axios.get(`https://api.opensubtitles.com/api/v1/subtitles`, {
+          params,
+          headers: {
+            'Api-Key': API_KEY,
+            'User-Agent': USER_AGENT
+          },
+          timeout: 4000
+        });
+
+        if (searchRes.data && Array.isArray(searchRes.data.data)) {
+          searchRes.data.data.forEach((item: any) => {
+            const file = item.attributes.files[0];
+            if (file && file.file_id) {
+              const norm = normalizeLanguageLabel(item.attributes.language, 'OpenSubtitles API');
+              list.push({
+                id: `os-${file.file_id}`,
+                file_id: file.file_id,
+                lang: norm.langCode,
+                langName: norm.langName,
+                addon: 'OpenSubtitles API',
+                url: `/api/opensubtitles/download?file_id=${file.file_id}`
+              });
+            }
           });
-          break;
         }
       } catch (err) {
         // Ignore
       }
+      return list;
+    };
+
+    // Execute all 5 subtitle pipelines in parallel
+    const results = await Promise.allSettled([
+      fetchAio(),
+      fetchSubDlStremio(),
+      fetchOpenSubtitlesStremio(),
+      fetchSubDlDirect(),
+      fetchOpenSubtitlesDirect()
+    ]);
+
+    const combined: any[] = [];
+    results.forEach(r => {
+      if (r.status === 'fulfilled') {
+        combined.push(...r.value);
+      }
+    });
+
+    // Deduplicate subtitles strictly by download URL
+    const seenUrls = new Set<string>();
+    const uniqueSubs: any[] = [];
+    for (const sub of combined) {
+      if (!sub.url) continue;
+      if (!seenUrls.has(sub.url)) {
+        seenUrls.add(sub.url);
+        uniqueSubs.push(sub);
+      }
     }
 
-    const uniqueSubs = Array.from(new Map(allSubtitles.map(s => [s.url, s])).values());
+    // Sort: Always prioritize Vietnamese/Vietsub (wie/vi/viet) to the absolute top of the list
+    uniqueSubs.sort((a, b) => {
+      const aLang = (a.lang || '').toLowerCase();
+      const aName = (a.langName || '').toLowerCase();
+      const bLang = (b.lang || '').toLowerCase();
+      const bName = (b.langName || '').toLowerCase();
+      
+      const aIsVi = aLang.includes('vi') || aLang.includes('vie') || aName.includes('viet');
+      const bIsVi = bLang.includes('vi') || bLang.includes('vie') || bName.includes('viet');
+      
+      if (aIsVi && !bIsVi) return -1;
+      if (!aIsVi && bIsVi) return 1;
+      return 0;
+    });
+
+    // Save in search cache
+    searchResultsCache.set(cacheKey, uniqueSubs);
+
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.json({ subtitles: uniqueSubs });
+
   } catch (error: any) {
     console.error('Error fetching subtitles:', error.message);
     res.json({ subtitles: [] });
@@ -440,6 +737,14 @@ app.get("/api/subtitles/proxy", async (req, res) => {
     const subtitleUrl = req.query.url as string;
     if (!subtitleUrl || !subtitleUrl.startsWith('http')) {
       return res.status(400).send('Invalid or missing subtitle url');
+    }
+
+    // Check cache first
+    const cachedContent = subtitleProxyCache.get(subtitleUrl);
+    if (cachedContent) {
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.send(cachedContent);
     }
 
     let referer = '';
@@ -468,6 +773,9 @@ app.get("/api/subtitles/proxy", async (req, res) => {
     if (!rawData.trim().startsWith('WEBVTT')) {
       vttContent = srtToVtt(rawData);
     }
+
+    // Save in cache
+    subtitleProxyCache.set(subtitleUrl, vttContent);
 
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');

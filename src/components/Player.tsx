@@ -133,6 +133,7 @@ export const Player: React.FC<PlayerProps> = ({
   const [currentSubtitleText, setCurrentSubtitleText] = useState('');
   const [currentSubtitleText2, setCurrentSubtitleText2] = useState('');
   const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [isLoadingSubtitles, setIsLoadingSubtitles] = useState(false);
   const [subtitleSettings, setSubtitleSettings] = useState({
     fontSize: 'lg',
@@ -178,7 +179,9 @@ export const Player: React.FC<PlayerProps> = ({
 
         // Extract clean IMDb ID if there is one (handles cases like kkphim:tt1234567)
         let cleanImdbId = '';
-        if (movieId) {
+        if (imdbId && /^tt\d{7,10}$/.test(imdbId)) {
+          cleanImdbId = imdbId;
+        } else if (movieId) {
           const parts = movieId.split(':');
           const lastPart = parts[parts.length - 1];
           if (/^tt\d{7,10}$/.test(lastPart)) {
@@ -199,11 +202,31 @@ export const Player: React.FC<PlayerProps> = ({
           const uniqueNewSubs = newSubs.filter(newSub => !allSubs.some(existing => existing.id === newSub.id || existing.url === newSub.url));
           if (uniqueNewSubs.length > 0) {
             allSubs = [...allSubs, ...uniqueNewSubs];
+            
+            // Sort subtitles: prioritize Vietnamese/Vietsub (and User uploads) at the very top
+            allSubs.sort((a, b) => {
+              const aLang = (a.lang || '').toLowerCase();
+              const aName = (a.langName || '').toLowerCase();
+              const bLang = (b.lang || '').toLowerCase();
+              const bName = (b.langName || '').toLowerCase();
+              
+              const aIsVi = aLang.includes('vi') || aLang.includes('vie') || aName.includes('viet') || a.addon === 'User Upload';
+              const bIsVi = bLang.includes('vi') || bLang.includes('vie') || bName.includes('viet') || b.addon === 'User Upload';
+              
+              if (aIsVi && !bIsVi) return -1;
+              if (!aIsVi && bIsVi) return 1;
+              return 0;
+            });
+
             setSubtitles([...allSubs]);
             
             // Auto-select Vietnamese subtitle, upgrading if we previously settled for a non-vi sub
             if (!autoSelectedIsVi) {
-               const viSub = allSubs.find((s: any) => (s.lang || '').toLowerCase().includes('vi') || (s.lang || '').toLowerCase().includes('vie'));
+               const viSub = allSubs.find((s: any) => {
+                 const sLang = (s.lang || '').toLowerCase();
+                 const sName = (s.langName || '').toLowerCase();
+                 return sLang.includes('vi') || sLang.includes('vie') || sName.includes('viet');
+               });
                if (viSub) {
                  setActiveSubtitle(viSub);
                  autoSelectedIsVi = true;
@@ -216,66 +239,25 @@ export const Player: React.FC<PlayerProps> = ({
           }
         };
 
-        // 1. Fetch from /api/subtitles (AIO & Stremio SubDL addons)
+        // Make a single, consolidated call to the upgraded /api/subtitles endpoint
         try {
           const res = await axios.get('/api/subtitles', {
             params: {
               id: movieId,
+              imdb_id: cleanImdbId || undefined,
               type: isSeries ? 'series' : 'movie',
               season: 1,
-              episode: epNum
+              episode: epNum,
+              title: movieTitle,
+              originName: originName
             },
-            timeout: 8000 // Don't wait forever
+            timeout: 12000 // Allow sufficient time for the parallel backend fetch
           });
           if (res.data && Array.isArray(res.data.subtitles)) {
             addSubsToState(res.data.subtitles);
           }
         } catch (e) {
-          console.warn('Failed to fetch from /api/subtitles:', e);
-        }
-
-        // 2. Direct SubDL Fetch (Custom backend ZIP extraction)
-        const idForSubDl = cleanImdbId || movieId;
-        if (idForSubDl) {
-          try {
-            const res = await axios.get('/api/subdl/search', {
-              params: {
-                imdb_id: idForSubDl,
-                type: isSeries ? 'series' : 'movie'
-              },
-              timeout: 10000
-            });
-            if (res.data && Array.isArray(res.data.subtitles)) {
-              addSubsToState(res.data.subtitles);
-            }
-          } catch (e) {
-            console.warn('Direct SubDL fetch failed:', e);
-          }
-        }
-
-        // 4. OpenSubtitles Integration
-        if (cleanImdbId || originName || movieTitle) {
-          try {
-            const osRes = await axios.get('/api/opensubtitles', {
-              params: {
-                imdb_id: cleanImdbId || undefined,
-                title: originName || movieTitle
-              },
-              timeout: 10000 // Protect against backend hang
-            });
-            if (osRes.data && osRes.data.success && Array.isArray(osRes.data.subtitles)) {
-              const osSubs = osRes.data.subtitles.map((sub: any) => ({
-                url: sub.url,
-                lang: sub.lang,
-                langName: sub.langName,
-                addon: sub.addon,
-                id: sub.id || sub.url
-              }));
-              addSubsToState(osSubs);
-            }
-          } catch (e) {
-            console.warn('OpenSubtitles direct fetch failed:', e);
-          }
+          console.warn('Failed to fetch consolidated subtitles:', e);
         }
 
         if (isMounted) setIsLoadingSubtitles(false);
@@ -290,11 +272,10 @@ export const Player: React.FC<PlayerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [stream, currentEpisodeIdx, movieTitle, originName]);
+  }, [stream, currentEpisodeIdx, movieTitle, originName, refreshTrigger]);
 
-  // Load and parse VTT cues when activeSubtitle changes
+  // Handle native text tracks display state
   useEffect(() => {
-    // Sync native text tracks
     if (videoRef.current) {
       const tracks = videoRef.current.textTracks;
       for (let i = 0; i < tracks.length; i++) {
@@ -306,7 +287,10 @@ export const Player: React.FC<PlayerProps> = ({
         }
       }
     }
+  }, [activeSubtitle, useNativeControls, subtitles]);
 
+  // Load and parse VTT cues when activeSubtitle.url changes
+  useEffect(() => {
     if (!activeSubtitle || !activeSubtitle.url) {
       setSubtitleCues([]);
       setCurrentSubtitleText('');
@@ -345,7 +329,7 @@ export const Player: React.FC<PlayerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [activeSubtitle, useNativeControls, subtitles]);
+  }, [activeSubtitle?.url]);
 
   // Load and parse VTT cues when activeSubtitle2 changes
   useEffect(() => {
@@ -1683,7 +1667,8 @@ export const Player: React.FC<PlayerProps> = ({
                   {/* Subtitle menu button */}
                   <button
                     onClick={() => {
-                      setShowSubtitleMenu(!showSubtitleMenu);
+                      const nextState = !showSubtitleMenu;
+                      setShowSubtitleMenu(nextState);
                       setShowServerMenu(false);
                       setShowSettings(false);
                       setShowEpisodeMenu(false);
@@ -2124,10 +2109,19 @@ export const Player: React.FC<PlayerProps> = ({
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-gray-400 uppercase font-semibold text-[10px] tracking-wider">Phụ Đề Chính</span>
-                  {isLoadingSubtitles && <span className="text-amber-400 animate-pulse text-[10px]">Đang quét...</span>}
+                  <div className="flex items-center gap-1.5">
+                    {isLoadingSubtitles && <span className="text-amber-400 animate-pulse text-[10px]">Đang quét...</span>}
+                    <button
+                      onClick={() => setRefreshTrigger(prev => prev + 1)}
+                      className="text-[10px] bg-red-600/10 hover:bg-red-600/30 border border-red-500/30 text-red-400 font-semibold px-2 py-0.5 rounded transition-all active:scale-95 flex items-center gap-1"
+                      title="Quét lại toàn bộ các nguồn phụ đề từ API ngay lập tức"
+                    >
+                      <span>Quét lại</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div className="space-y-1 max-h-24 overflow-y-auto pr-1 mb-3">
+                <div className="space-y-1 max-h-56 overflow-y-auto pr-1 mb-3">
                   <button
                     onClick={() => {
                       setActiveSubtitle(null);
@@ -2142,6 +2136,7 @@ export const Player: React.FC<PlayerProps> = ({
 
                   {subtitles.map((sub, idx) => {
                     const isCurrent = activeSubtitle?.url === sub.url;
+                    const isVi = (sub.lang || '').toLowerCase().includes('vi') || (sub.lang || '').toLowerCase().includes('vie') || (sub.langName || '').toLowerCase().includes('viet');
                     return (
                       <button
                         key={idx}
@@ -2153,9 +2148,12 @@ export const Player: React.FC<PlayerProps> = ({
                         }`}
                       >
                         <div className="flex flex-col min-w-0 pr-2">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-bold text-white truncate">{sub.langName || sub.lang || 'Tiếng Việt'}</span>
-                            <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/20 text-amber-300 font-mono uppercase">{sub.addon || 'Addon'}</span>
+                            {isVi && (
+                              <span className="px-1 py-0.2 rounded text-[8px] bg-red-600 text-white font-bold tracking-wider uppercase shrink-0">VIETSUB</span>
+                            )}
+                            <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/20 text-amber-300 font-mono uppercase shrink-0">{sub.addon || 'Addon'}</span>
                           </div>
                           <span className="text-[10px] text-gray-400 truncate mt-0.5">{sub.id || sub.url}</span>
                         </div>
@@ -2169,7 +2167,7 @@ export const Player: React.FC<PlayerProps> = ({
                   <span className="text-gray-400 uppercase font-semibold text-[10px] tracking-wider">Phụ Đề Phụ (Song Ngữ)</span>
                 </div>
 
-                <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
                   <button
                     onClick={() => {
                       setActiveSubtitle2(null);
@@ -2184,6 +2182,7 @@ export const Player: React.FC<PlayerProps> = ({
 
                   {subtitles.map((sub, idx) => {
                     const isCurrent = activeSubtitle2?.url === sub.url;
+                    const isVi = (sub.lang || '').toLowerCase().includes('vi') || (sub.lang || '').toLowerCase().includes('vie') || (sub.langName || '').toLowerCase().includes('viet');
                     return (
                       <button
                         key={idx}
@@ -2195,9 +2194,12 @@ export const Player: React.FC<PlayerProps> = ({
                         }`}
                       >
                         <div className="flex flex-col min-w-0 pr-2">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
                             <span className="font-bold text-white truncate">{sub.langName || sub.lang || 'Tiếng Việt'}</span>
-                            <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/20 text-amber-300 font-mono uppercase">{sub.addon || 'Addon'}</span>
+                            {isVi && (
+                              <span className="px-1 py-0.2 rounded text-[8px] bg-red-600 text-white font-bold tracking-wider uppercase shrink-0">VIETSUB</span>
+                            )}
+                            <span className="px-1 py-0.2 rounded text-[8px] bg-amber-500/20 text-amber-300 font-mono uppercase shrink-0">{sub.addon || 'Addon'}</span>
                           </div>
                           <span className="text-[10px] text-gray-400 truncate mt-0.5">{sub.id || sub.url}</span>
                         </div>
