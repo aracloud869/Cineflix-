@@ -83,6 +83,87 @@ export function Home() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const watchedMoviesMapped = useMemo(() => {
+    const seen = new Set<string>();
+    const list: any[] = [];
+    if (Array.isArray(watchedMovies)) {
+      watchedMovies.forEach((w: any) => {
+        if (!w || !w.movieId) return;
+        if (!w.movieName || w.movieName === 'Chi Tiết Phim' || w.movieName?.toLowerCase() === 'chi tiết phim') return;
+        if (!seen.has(w.movieId)) {
+          seen.add(w.movieId);
+          list.push({
+            id: w.movieId,
+            name: w.movieName,
+            poster: w.poster || '',
+            background: w.poster || '',
+            sourceIds: [w.movieId],
+            isHistory: true,
+            episodeTitle: w.episodeTitle || 'Bản Đầy Đủ'
+          });
+        }
+      });
+    }
+    return list;
+  }, [watchedMovies]);
+
+  const MovieRow = ({ title, list, icon: RowIcon, viewAllPath }: { title: string; list: UnifiedMovie[]; icon?: any; viewAllPath?: string }) => {
+    const scrollRef = useRef<HTMLDivElement>(null);
+
+    const scroll = (direction: 'left' | 'right') => {
+      if (scrollRef.current) {
+        const offset = direction === 'left' ? -400 : 400;
+        scrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
+      }
+    };
+
+    if (!list || list.length === 0) return null;
+
+    return (
+      <div className="py-4 sm:py-6 group/row relative">
+        <div className="flex items-center justify-between px-4 sm:px-8 lg:px-12 mb-3">
+          <div className="flex items-center gap-2.5">
+            {RowIcon && <RowIcon className="w-5 h-5 text-[#E50914]" />}
+            <h2 className="text-lg sm:text-2xl font-extrabold text-white tracking-tight">
+              {title}
+            </h2>
+          </div>
+          {viewAllPath && (
+            <Link to={viewAllPath} className="text-xs text-gray-400 font-semibold cursor-pointer hover:text-white transition-colors">
+              Xem tất cả →
+            </Link>
+          )}
+        </div>
+
+        <button
+          onClick={() => scroll('left')}
+          className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
+        >
+          <ChevronLeft className="w-6 h-6" />
+        </button>
+
+        <div
+          ref={scrollRef}
+          className="flex gap-3 sm:gap-4 overflow-x-auto px-4 sm:px-8 lg:px-12 pb-4 scrollbar-hide snap-x snap-mandatory"
+          style={{ scrollbarWidth: 'none' }}
+        >
+          {list.map((movie) => (
+            <div key={movie.id} className="snap-start shrink-0">
+              <MovieCard movie={movie} />
+            </div>
+          ))}
+        </div>
+
+        <button
+          onClick={() => scroll('right')}
+          className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
+        >
+          <ChevronRight className="w-6 h-6" />
+        </button>
+      </div>
+    );
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#0a0b10] pb-24 overflow-x-hidden pt-24">
@@ -270,92 +351,6 @@ export function Home() {
   const moviesHot = homeMovies.filter(m => m.type !== 'series' && !m.id.includes('series')).slice(0, 16);
   const trending = homeMovies.slice(10, 26);
   const recommended = homeMovies.slice(26, 42);
-
-  const watchedMoviesMapped = useMemo(() => {
-    const seen = new Set<string>();
-    const list: any[] = [];
-    if (Array.isArray(watchedMovies)) {
-      // Traverse from most recent (end of array or start of array depending on sort)
-      // Since new items are appended or prepended, let's keep the order but filter duplicates
-      watchedMovies.forEach((w: any) => {
-        if (!w || !w.movieId) return;
-        if (!w.movieName || w.movieName === 'Chi Tiết Phim' || w.movieName?.toLowerCase() === 'chi tiết phim') return;
-        if (!seen.has(w.movieId)) {
-          seen.add(w.movieId);
-          list.push({
-            id: w.movieId,
-            name: w.movieName,
-            poster: w.poster || '',
-            background: w.poster || '',
-            sourceIds: [w.movieId],
-            isHistory: true,
-            episodeTitle: w.episodeTitle || 'Bản Đầy Đủ'
-          });
-        }
-      });
-    }
-    return list;
-  }, [watchedMovies]);
-
-  const MovieRow = ({ title, list, icon: RowIcon, viewAllPath }: { title: string; list: UnifiedMovie[]; icon?: any; viewAllPath?: string }) => {
-    const scrollRef = useRef<HTMLDivElement>(null);
-
-    const scroll = (direction: 'left' | 'right') => {
-      if (scrollRef.current) {
-        const offset = direction === 'left' ? -400 : 400;
-        scrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
-      }
-    };
-
-    if (!list || list.length === 0) return null;
-
-    return (
-      <div className="py-4 sm:py-6 group/row relative">
-        <div className="flex items-center justify-between px-4 sm:px-8 lg:px-12 mb-3">
-          <div className="flex items-center gap-2.5">
-            {RowIcon && <RowIcon className="w-5 h-5 text-[#E50914]" />}
-            <h2 className="text-lg sm:text-2xl font-extrabold text-white tracking-tight">
-              {title}
-            </h2>
-          </div>
-          {viewAllPath && (
-            <Link to={viewAllPath} className="text-xs text-gray-400 font-semibold cursor-pointer hover:text-white transition-colors">
-              Xem tất cả →
-            </Link>
-          )}
-        </div>
-
-        {/* Scroll Left Button */}
-        <button
-          onClick={() => scroll('left')}
-          className="absolute left-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-
-        {/* Horizontal Card Carousel */}
-        <div
-          ref={scrollRef}
-          className="flex gap-3 sm:gap-4 overflow-x-auto px-4 sm:px-8 lg:px-12 pb-4 scrollbar-hide snap-x snap-mandatory"
-          style={{ scrollbarWidth: 'none' }}
-        >
-          {list.map((movie) => (
-            <div key={movie.id} className="snap-start shrink-0">
-              <MovieCard movie={movie} />
-            </div>
-          ))}
-        </div>
-
-        {/* Scroll Right Button */}
-        <button
-          onClick={() => scroll('right')}
-          className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-black/80 hover:bg-[#E50914] text-white flex items-center justify-center z-30 opacity-0 group-hover/row:opacity-100 transition-all duration-300 shadow-xl border border-white/20 hidden md:flex"
-        >
-          <ChevronRight className="w-6 h-6" />
-        </button>
-      </div>
-    );
-  };
 
   return (
     <div className="min-h-screen bg-[#0a0b10] flex flex-col justify-between overflow-x-hidden">
