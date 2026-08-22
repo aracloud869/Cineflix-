@@ -31,7 +31,10 @@ export function MovieDetails() {
   const [newComment, setNewComment] = useState('');
   const [subtitleFile, setSubtitleFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [loadingSubId, setLoadingSubId] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  
+  const [activeManualSubtitle, setActiveManualSubtitle] = useState<any | null>(null);
   
   const [selectedEpisodeIdx, setSelectedEpisodeIdx] = useState<number>(0);
   const [episodeSearch, setEpisodeSearch] = useState('');
@@ -413,6 +416,7 @@ export function MovieDetails() {
                 onBack={handleGoBack}
                 imdbId={primaryMeta.imdbId}
                 movieId={primaryMeta.id || id}
+                userSubtitles={activeManualSubtitle ? [activeManualSubtitle] : []}
               />
             ) : (
               <div className="aspect-video w-full flex flex-col items-center justify-center bg-[#0d0e15] border-b border-white/10 p-6 text-center">
@@ -782,14 +786,38 @@ export function MovieDetails() {
                         : s.fileUrl;
                         
                       return (
-                        <a 
+                        <button 
                           key={s.id || idx} 
-                          href={downloadUrl} 
-                          download={isFallback ? s.name : undefined}
-                          target="_blank" 
-                          rel="noreferrer" 
-                          className="flex-shrink-0 w-64 p-4 bg-[#1a1b23] border border-white/5 rounded-xl hover:border-red-500/50 hover:bg-[#20212e] transition-all group relative overflow-hidden"
+                          onClick={async () => {
+                              if (loadingSubId) return;
+                              setLoadingSubId(s.id || s.fileUrl);
+                              try {
+                                  const response = await fetch(`/api/subtitles/proxy-cached?url=${encodeURIComponent(s.fileUrl)}&movieId=${primaryMeta.id || id}`);
+                                  if (!response.ok) throw new Error('Failed to load subtitle');
+                                  const content = await response.text();
+                                  setActiveManualSubtitle({
+                                      url: `text-fallback:${content}`,
+                                      name: s.name,
+                                      lang: s.lang,
+                                      langName: s.langName,
+                                      addon: 'Custom Loaded'
+                                  });
+                                  alert('Phụ đề đã được tải và áp dụng!');
+                              } catch (err) {
+                                  console.error(err);
+                                  alert('Lỗi tải phụ đề!');
+                              } finally {
+                                  setLoadingSubId(null);
+                              }
+                          }}
+                          className={`flex-shrink-0 w-64 p-4 bg-[#1a1b23] border border-white/5 rounded-xl hover:border-red-500/50 hover:bg-[#20212e] transition-all group relative overflow-hidden ${loadingSubId === (s.id || s.fileUrl) ? 'opacity-50 cursor-wait' : ''}`}
                         >
+                          {loadingSubId === (s.id || s.fileUrl) && (
+                              <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+                                  <div className="w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                              </div>
+                          )}
+
                           <div className="absolute top-0 left-0 w-1 h-full bg-[#E50914] opacity-0 group-hover:opacity-100 transition-opacity" />
                           <div className="flex items-start gap-3">
                             <div className="bg-white/5 w-10 h-10 rounded-lg flex-shrink-0 flex items-center justify-center group-hover:bg-red-600/20 transition-colors">
@@ -802,7 +830,7 @@ export function MovieDetails() {
                               </p>
                             </div>
                           </div>
-                        </a>
+                        </button>
                       );
                     })}
                   </div>

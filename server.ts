@@ -1,20 +1,13 @@
 import express from "express";
 import path from "path";
 import axios from "axios";
-import * as admin from "firebase-admin";
+import { initializeApp } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc } from 'firebase/firestore';
+import firebaseConfig from './firebase-applet-config.json';
+
 import AdmZip from "adm-zip";
 import jschardet from "jschardet";
 import iconv from "iconv-lite";
-import crypto from "crypto";
-
-// Initialize Firebase Admin
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.applicationDefault(),
-    databaseURL: "https://ai-studio-k20phim-edf185d7-d77b-44eb-bf97-d343925be36d.firebaseio.com"
-  });
-}
-const db = admin.firestore();
 
 // Simple in-memory cache with TTL (Time To Live) to completely prevent 429 rate limits
 class SimpleMemoryCache<T> {
@@ -94,6 +87,8 @@ const searchResultsCache = new SimpleMemoryCache<any[]>(12 * 60 * 60 * 1000);   
 const imdbIdCache = new SimpleMemoryCache<string>(30 * 24 * 60 * 60 * 1000); // 30 days IMDb ID mapping cache
 
 const app = express();
+const appApp = initializeApp(firebaseConfig);
+const db = getFirestore(appApp, firebaseConfig.firestoreDatabaseId);
 const PORT = 3000;
 
 app.use(express.json());
@@ -110,22 +105,23 @@ function removeVietnameseAccents(str: string): string {
 function resolveSubtitleUrl(url: string, baseHost: string = ''): string {
   if (!url || typeof url !== 'string' || url === 'undefined' || url === 'null') return '';
   
-  let finalUrl = url;
+  let finalUrl = url.trim();
   
   // Handle protocol-relative URLs
   if (finalUrl.startsWith('//')) {
     finalUrl = 'https:' + finalUrl;
   }
   
-  // If it's a relative path starting with '/', resolve it using the provided baseHost
-  if (finalUrl.startsWith('/') && !finalUrl.startsWith('/api/') && baseHost) {
+  // If it's a relative path, resolve it using the provided baseHost
+  if (!finalUrl.startsWith('http') && !finalUrl.startsWith('/api/') && baseHost) {
     const cleanBase = baseHost.endsWith('/') ? baseHost.slice(0, -1) : baseHost;
-    finalUrl = cleanBase + finalUrl;
+    const cleanPath = finalUrl.startsWith('/') ? finalUrl : '/' + finalUrl;
+    finalUrl = cleanBase + cleanPath;
   }
   
-  // Special handling for SubDL.com relative URLs
-  if (finalUrl.includes('subdl.com') && !finalUrl.startsWith('http')) {
-    finalUrl = 'https://dl.subdl.com' + (finalUrl.startsWith('/') ? '' : '/') + finalUrl;
+  // Special handling for SubDL.com paths if still relative
+  if (!finalUrl.startsWith('http') && (finalUrl.includes('subdl') || finalUrl.startsWith('subtitle/'))) {
+    finalUrl = 'https://dl.subdl.com/' + (finalUrl.startsWith('/') ? finalUrl.slice(1) : finalUrl);
   }
   
   // Always proxy external URLs to handle CORS, SRT->VTT, and Encoding detection
@@ -200,6 +196,132 @@ async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = '
   return null;
 }
 
+async function fetchAndExtractSubtitle(url: string): Promise<string> {
+  let subtitleUrl = url;
+  
+  // Handle protocol-relative URLs
+  if (subtitleUrl.startsWith('//')) {
+    subtitleUrl = 'https:' + subtitleUrl;
+  }
+
+  if (!subtitleUrl.startsWith('http')) {
+    throw new Error('Invalid subtitle url protocol');
+  }
+
+  let referer = '';
+  try {
+    referer = new URL(subtitleUrl).origin;
+    // Force SubDL referer if it's a subdl URL
+    if (subtitleUrl.includes('subdl.com')) {
+      referer = 'https://subdl.com/';
+    }
+  } catch (e) {
+    // Ignore
+  }
+
+  const response = await axiosGetWithRetry(subtitleUrl, {
+    responseType: 'arraybuffer', // Use arraybuffer to handle potential encoding issues
+    timeout: 15000, // Increased timeout for slow subtitle servers
+    headers: {
+      ...(referer ? { 'Referer': referer } : {})
+    }
+  });
+
+  let vttContent = "";
+  const contentType = response.headers['content-type'] || '';
+  const isZip = contentType.includes('zip') || subtitleUrl.toLowerCase().split('?')[0].endsWith('.zip');
+
+  const decodeBuffer = (buffer: Buffer): string => {
+    try {
+      const detection = jschardet.detect(buffer);
+      let encoding = detection.encoding || 'utf-8';
+      
+      // Jschardet sometimes misidentifies Windows-1252/1258 as something else
+      if (encoding.toLowerCase() === 'ascii' || detection.confidence < 0.8) {
+        encoding = 'utf-8';
+      }
+      
+      let decoded = iconv.decode(buffer, encoding);
+      
+      // Handle Byte Order Mark (BOM)
+      if (decoded.charCodeAt(0) === 0xFEFF) {
+        decoded = decoded.slice(1);
+      }
+      
+      // Double check for garbled text (Vietnamese specific check)
+      if (decoded.includes('')) {
+        decoded = iconv.decode(buffer, 'windows-1258');
+      }
+      
+      return decoded;
+    } catch (err) {
+      console.warn('[Proxy] Encoding detection failed, falling back to utf-8');
+      return buffer.toString('utf-8');
+    }
+  };
+
+  if (isZip) {
+    // Handle ZIP extraction transparently in the proxy
+    const zip = new AdmZip(Buffer.from(response.data));
+    const zipEntries = zip.getEntries();
+    
+    // Sophisticated searching for Vietnamese subtitles
+    const viKeywords = ['viet', 'vi.', 'vi-', 'vie.', 'vie-', 'vn.', 'vn-'];
+    
+    // 1. Look for VTT first (preferred)
+    let vttEntry = zipEntries.find(entry => {
+      if (entry.isDirectory || !entry.entryName.toLowerCase().endsWith('.vtt')) return false;
+      const name = entry.entryName.toLowerCase();
+      return viKeywords.some(kw => name.includes(kw)) || name.includes('vietnamese');
+    });
+    
+    // 2. Look for SRT if no VTT found
+    let srtEntry = zipEntries.find(entry => {
+      if (entry.isDirectory || !entry.entryName.toLowerCase().endsWith('.srt')) return false;
+      const name = entry.entryName.toLowerCase();
+      return viKeywords.some(kw => name.includes(kw)) || name.includes('vietnamese');
+    });
+
+    // 3. Fallback to any VTT
+    if (!vttEntry && !srtEntry) {
+      vttEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.vtt'));
+    }
+    
+    // 4. Fallback to any SRT
+    if (!vttEntry && !srtEntry) {
+      srtEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.srt'));
+    }
+    
+    // 5. Final fallback: largest non-directory file that might be a subtitle
+    if (!srtEntry && !vttEntry) {
+      const candidates = zipEntries.filter(e => !e.isDirectory && e.header.size > 100);
+      if (candidates.length > 0) {
+        const largest = candidates.sort((a, b) => b.header.size - a.header.size)[0];
+        const name = largest.entryName.toLowerCase();
+        if (name.endsWith('.srt')) srtEntry = largest;
+        else if (name.endsWith('.vtt')) vttEntry = largest;
+        else srtEntry = largest;
+      }
+    }
+
+    if (vttEntry) {
+      const buffer = vttEntry.getData();
+      vttContent = decodeBuffer(buffer);
+    } else if (srtEntry) {
+      const buffer = srtEntry.getData();
+      vttContent = srtToVtt(decodeBuffer(buffer));
+    } else {
+      throw new Error('No valid subtitle file found in ZIP');
+    }
+  } else {
+    vttContent = decodeBuffer(Buffer.from(response.data));
+    if (!contentType.includes('vtt')) {
+      vttContent = srtToVtt(vttContent);
+    }
+  }
+  return vttContent;
+}
+
 // Global IMDb ID Resolver
 async function getImdbId(idOrTitle: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
   if (!idOrTitle) return null;
@@ -234,77 +356,81 @@ async function getImdbId(idOrTitle: string, type: 'movie' | 'series' = 'movie'):
   return resolved;
 }
 
-// SubDL API integration - Search
-app.get("/api/subdl/search", async (req, res) => {
+// Subsource API integration - Search
+app.get("/api/subsource/search", async (req, res) => {
   const { imdb_id, type = 'movie' } = req.query;
-  const SUBDL_API_KEY = "subdl_B_aIO1H-jyorIqf4B-DtIA5OUE1EBuapUlJebKMc27g";
+  const SUBSOURCE_API_KEY = process.env.SUBSOURCE_API_KEY;
 
   if (!imdb_id || typeof imdb_id !== 'string') {
     return res.status(400).json({ error: "Missing or invalid imdb_id" });
   }
 
-  let resolvedImdbId = imdb_id;
-  if (!resolvedImdbId.startsWith('tt')) {
-    const resolved = await getImdbId(resolvedImdbId, type === 'series' ? 'series' : 'movie');
-    if (resolved) {
-      resolvedImdbId = resolved;
-    } else {
-      return res.status(404).json({ error: "Could not resolve IMDb ID for SubDL search" });
-    }
+  if (!SUBSOURCE_API_KEY) {
+    return res.status(500).json({ error: "SUBSOURCE_API_KEY not configured" });
   }
 
   try {
-    const searchRes = await axiosGetWithRetry(`https://api.subdl.com/api/v1/subtitles`, {
+    const searchRes = await axios.get(`https://api.subsource.net/api/v1/subtitles`, {
+      headers: {
+        'X-API-Key': SUBSOURCE_API_KEY
+      },
       params: {
-        api_key: SUBDL_API_KEY,
-        imdb_id: resolvedImdbId,
-        languages: "vi,en",
-        type: type === 'series' ? 'tv' : 'movie'
+        imdb_id: imdb_id,
+        languages: "vi,en"
       }
     });
 
-    if (!searchRes.data || searchRes.data.status === false) {
-      const subdlError = searchRes.data?.error || "Unknown SubDL error";
-      console.warn(`SubDL API could not find media: ${resolvedImdbId} - ${subdlError}`);
-      return res.status(404).json({ error: `SubDL: ${subdlError}`, status: false });
+    if (!searchRes.data || !searchRes.data.subtitles) {
+      return res.status(404).json({ error: "No subtitles found" });
     }
 
-    if (!searchRes.data.subtitles || searchRes.data.subtitles.length === 0) {
-      return res.json({ subtitles: [] });
-    }
-
-    const subtitles = searchRes.data.subtitles
-      .filter((sub: any) => sub && sub.url)
-      .map((sub: any) => {
-        const finalUrl = resolveSubtitleUrl(sub.url);
-
-        return {
-          url: finalUrl,
-          lang: sub.language || 'vie',
-          langName: `${sub.lang || sub.language} (SubDL)`,
-          addon: 'SubDL API',
-          id: sub.url
-        };
-      });
+    const subtitles = searchRes.data.subtitles.map((sub: any) => ({
+        url: sub.download_url,
+        lang: sub.language || 'vie',
+        langName: `${sub.language || 'vie'} (SubSource)`,
+        addon: 'SubSource API',
+        id: sub.id
+    }));
 
     res.json({ subtitles });
-
   } catch (error: any) {
-    console.error('SubDL search error:', error.message);
-    const status = error.response ? error.response.status : 500;
-    res.status(status).json({ error: "Failed to search subtitles from SubDL", details: error.message });
+    console.error('SubSource search error:', error.message);
+    res.status(500).json({ error: "Failed to search subtitles from SubSource" });
   }
 });
 
 // SubDL API integration - Extract (Old Method Restored)
-app.get("/api/subdl/extract", async (req, res) => {
-  const { url } = req.query;
-  if (!url || typeof url !== 'string' || url === 'undefined' || url === 'null') {
-    return res.status(400).send("Missing or invalid URL");
+app.get("/api/subtitles/proxy-cached", async (req, res) => {
+  const { url, movieId } = req.query;
+  if (!url || typeof url !== 'string') return res.status(400).send('Invalid URL');
+  
+  const subtitleDocRef = doc(db, 'subtitles', encodeURIComponent(url));
+  const docSnap = await getDoc(subtitleDocRef);
+  
+  if (docSnap.exists()) {
+    const content = docSnap.data().fileContent;
+    // Always decode as it is stored as base64
+    const decoded = Buffer.from(content, 'base64').toString('utf-8');
+    return res.send(decoded);
   }
-
-  // Use the main proxy logic but wrap it as a dedicated endpoint
-  res.redirect(`/api/subtitles/proxy?url=${encodeURIComponent(url)}`);
+  
+  // Fetch from source, cache, return
+  try {
+    const vttContent = await fetchAndExtractSubtitle(url);
+    const fileContent = Buffer.from(vttContent).toString('base64');
+    
+    await setDoc(subtitleDocRef, {
+      movieId: movieId || 'unknown',
+      fileUrl: url,
+      fileContent: fileContent,
+      addedBy: 'system'
+    });
+    
+    return res.send(vttContent); // Send raw text!
+  } catch (error) {
+    console.error('Error fetching/caching subtitle:', error);
+    return res.status(500).send('Error fetching subtitle');
+  }
 });
 
 // OpenSubtitles API integration
@@ -461,8 +587,20 @@ function srtToVtt(srt: string): string {
     return `${formatTime(hms1, ms1)} --> ${formatTime(hms2, ms2)}`;
   });
 
-  // 2. Ensure WEBVTT header
-  return 'WEBVTT\n\n' + text.trim();
+  // 2. Remove SRT sequence numbers (lines containing only digits)
+  // 3. Ensure WEBVTT header
+  const lines = text.split('\n');
+  const vttLines = [];
+  vttLines.push('WEBVTT');
+  vttLines.push('');
+
+  for (let line of lines) {
+    // Skip lines that are just numbers (sequence identifiers)
+    if (/^\d+$/.test(line.trim())) continue;
+    vttLines.push(line);
+  }
+  
+  return vttLines.join('\n');
 }
 
 // Helper to clean search titles for movie/series database queries
@@ -697,7 +835,7 @@ app.get("/api/subtitles", async (req, res) => {
             .filter((sub: any) => sub && sub.url)
             .forEach((sub: any) => {
               const norm = normalizeLanguageLabel(sub.language, 'SubDL API');
-              const finalUrl = resolveSubtitleUrl(sub.url);
+              const finalUrl = resolveSubtitleUrl(sub.url, 'https://dl.subdl.com');
 
               list.push({
                 url: finalUrl,
@@ -766,12 +904,37 @@ app.get("/api/subtitles", async (req, res) => {
       return list;
     };
 
-    // Execute all 5 subtitle pipelines in parallel
+    // 6. SubSource API fetcher
+    const fetchSubSource = async () => {
+      const list: any[] = [];
+      if (!resolvedImdbId) return list;
+      
+      try {
+        console.log('[API Subtitles] Checking SubSource API Key:', process.env.SUBSOURCE_API_KEY ? 'Present' : 'Missing');
+        const response = await axios.get(`https://api.subsource.net/api/v1/subtitles`, {
+            headers: { 'X-API-Key': process.env.SUBSOURCE_API_KEY || '' },
+            params: { imdb_id: resolvedImdbId, languages: "vi,en" },
+            timeout: 3500
+        });
+        if (response.data && Array.isArray(response.data.subtitles)) {
+            response.data.subtitles.forEach((sub: any) => {
+                list.push({
+                    url: sub.download_url,
+                    lang: sub.language || 'vie',
+                    langName: `${sub.language || 'vie'} (SubSource)`,
+                    addon: 'SubSource API',
+                    id: sub.id
+                });
+            });
+        }
+      } catch (err) {
+        console.warn('[API Subtitles] SubSource fetch error:', err);
+      }
+      return list;
+    };
+
+    // Simplify to only reliable direct fetchers
     const results = await Promise.allSettled([
-      fetchAio(),
-      fetchSubDlStremio(),
-      fetchOpenSubtitlesStremio(),
-      fetchSubDlDirect(),
       fetchOpenSubtitlesDirect()
     ]);
 
@@ -839,28 +1002,13 @@ app.get("/api/subtitles/proxy", async (req, res) => {
       return res.status(400).send('Invalid subtitle url protocol');
     }
 
-    // Check Firestore cache first
-    const hashedUrl = crypto.createHash('sha256').update(subtitleUrl).digest('hex');
-    const docRef = db.collection('subtitles').doc(hashedUrl);
-    const doc = await docRef.get();
-    
-    if (doc.exists) {
-      const cachedContent = doc.data()?.content;
-      if (cachedContent) {
-        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
-        return res.send(cachedContent);
-      }
-    }
-    
-    // Check in-memory cache if not in Firestore (or fallback)
-    const cachedContentMemory = subtitleProxyCache.get(subtitleUrl);
-    if (cachedContentMemory) {
+    // Check cache first
+    const cachedContent = subtitleProxyCache.get(subtitleUrl);
+    if (cachedContent) {
       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
-      return res.send(cachedContentMemory);
+      return res.send(cachedContent);
     }
 
     let referer = '';
@@ -986,12 +1134,6 @@ app.get("/api/subtitles/proxy", async (req, res) => {
 
     // Save in cache
     subtitleProxyCache.set(subtitleUrl, vttContent);
-    // And Firestore
-    db.collection('subtitles').doc(hashedUrl).set({
-      content: vttContent,
-      url: subtitleUrl,
-      createdAt: admin.firestore.FieldValue.serverTimestamp()
-    }).catch(err => console.error('[Proxy] Failed to save to Firestore:', err));
 
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');

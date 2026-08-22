@@ -235,7 +235,7 @@ export const Player: React.FC<PlayerProps> = ({
         }
 
         // Initialize empty array of all subtitles
-        let allSubs: any[] = [];
+        let allSubs: any[] = [...userSubtitles];
         let hasAutoSelected = false;
         let autoSelectedIsVi = false;
         
@@ -315,7 +315,7 @@ export const Player: React.FC<PlayerProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [stream, currentEpisodeIdx, movieTitle, originName, refreshTrigger]);
+  }, [stream, currentEpisodeIdx, movieTitle, originName, refreshTrigger, userSubtitles]);
 
   // Handle native text tracks display state
   useEffect(() => {
@@ -518,22 +518,26 @@ export const Player: React.FC<PlayerProps> = ({
     // Some VTT cues have extra metadata after the timestamp, e.g., "00:00:10.000 line:80%"
     // We take the first part which is the actual timestamp
     const tsToParse = timeStr.trim().split(/\s+/)[0];
-
-    const cleanTime = tsToParse.replace(/[^\d:.,]/g, '').replace(',', '.');
-    const parts = cleanTime.split(':');
     
-    try {
-      if (parts.length === 3) {
-        return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
-      } else if (parts.length === 2) {
-        return parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-      } else if (parts.length === 1) {
-        return parseFloat(parts[0]);
-      }
-    } catch (e) {
-      return 0;
+    // Split into HMS and MS
+    // Expected format: HH:MM:SS.mmm or MM:SS.mmm
+    const [hms, ms] = tsToParse.split('.');
+    const parts = hms.split(':').map(part => parseFloat(part) || 0);
+    
+    let seconds = 0;
+    if (parts.length === 3) { // HH:MM:SS
+      seconds = parts[0] * 3600 + parts[1] * 60 + parts[2];
+    } else if (parts.length === 2) { // MM:SS
+      seconds = parts[0] * 60 + parts[1];
+    } else if (parts.length === 1) { // SS
+      seconds = parts[0];
     }
-    return 0;
+    
+    if (ms) {
+      seconds += parseFloat('0.' + ms);
+    }
+    
+    return seconds;
   }
 
   // Update subtitle text based on currentTime + offset
@@ -1096,7 +1100,7 @@ export const Player: React.FC<PlayerProps> = ({
       localStorage.setItem(resumeKey, video.currentTime.toString());
     }
 
-    if (video.buffered && video.buffered.length > 0) {
+    if (video.buffered.length > 0) {
       const bufferedEnd = video.buffered.end(video.buffered.length - 1);
       setBuffered(bufferedEnd);
     }

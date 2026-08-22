@@ -21,6 +21,7 @@
         "movieId": { "type": "string" },
         "name": { "type": "string" },
         "fileUrl": { "type": "string" },
+        "fileContent": { "type": "string" },
         "addedBy": { "type": "string" }
       }
     },

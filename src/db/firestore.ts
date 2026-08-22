@@ -2,12 +2,13 @@ import { doc, getDoc, setDoc, updateDoc, arrayUnion, collection, addDoc, query, 
 import { db } from '../firebase';
 import { Comment } from '../types';
 
-export const saveSubtitle = async (movieId: string, name: string, fileUrl: string, userId: string) => {
+export const saveSubtitle = async (movieId: string, name: string, fileUrl: string, userId: string, fileContent?: string) => {
   try {
     await addDoc(collection(db, 'subtitles'), {
       movieId,
       name,
       fileUrl,
+      fileContent,
       addedBy: userId,
       addedAt: serverTimestamp()
     });
