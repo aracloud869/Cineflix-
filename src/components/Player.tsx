@@ -6,13 +6,10 @@ import {
   Play, Pause, Maximize, Minimize, Settings, SkipForward, SkipBack, 
   Volume2, VolumeX, Volume1, RotateCcw, RotateCw, AlertTriangle, Moon, Sun, 
   Tv, Server, Check, ShieldCheck, Sparkles, FastForward, Rewind, Loader2,
-  ListVideo, X, Search, Smartphone, ArrowLeft, Languages, Upload, Sliders, RefreshCw
+  ListVideo, X, Search, Smartphone, ArrowLeft, Languages, Upload, Sliders
 } from 'lucide-react';
 import { mapSourceName, detectStreamType, formatDuration, cleanMediaUrl } from '../utils';
 import { getSubtitles } from '../db/firestore';
-
-// Global cache for parsed subtitle cues to make switching and re-loading instant
-const subtitleCueCache = new Map<string, { start: number; end: number; text: string }[]>();
 
 export interface PlayerEpisode {
   title: string;
@@ -343,12 +340,8 @@ export const Player: React.FC<PlayerProps> = ({
     let isMounted = true;
     async function loadSubFile() {
       try {
-        // Load from cache if available for instant display
-        if (subtitleCueCache.has(activeSubtitle.url)) {
-          setSubtitleCues(subtitleCueCache.get(activeSubtitle.url)!);
-          return;
-        }
-
+        if (activeSubtitle.url === 'local') return;
+        
         let vttText = "";
         if (activeSubtitle.url.startsWith('text-fallback:')) {
           vttText = activeSubtitle.url.replace('text-fallback:', '');
@@ -371,11 +364,6 @@ export const Player: React.FC<PlayerProps> = ({
 
         const cues = parseVttString(vttText);
         setSubtitleCues(cues);
-        
-        // Save to cache for future instant access
-        if (activeSubtitle.url) {
-          subtitleCueCache.set(activeSubtitle.url, cues);
-        }
         
         if (cues.length === 0) {
            console.warn('No subtitle cues parsed from:', activeSubtitle.url);
@@ -407,12 +395,6 @@ export const Player: React.FC<PlayerProps> = ({
     let isMounted = true;
     async function loadSubFile2() {
       try {
-        // Load from cache if available
-        if (subtitleCueCache.has(activeSubtitle2.url)) {
-          setSubtitleCues2(subtitleCueCache.get(activeSubtitle2.url)!);
-          return;
-        }
-
         if (activeSubtitle2.url === 'local') return;
         
         let vttText = "";
@@ -437,11 +419,6 @@ export const Player: React.FC<PlayerProps> = ({
 
         const cues = parseVttString(vttText);
         setSubtitleCues2(cues);
-        
-        // Save to cache
-        if (activeSubtitle2.url) {
-          subtitleCueCache.set(activeSubtitle2.url, cues);
-        }
       } catch (err) {
         console.error('Error loading secondary subtitle file:', err);
         setSubtitleCues2([]);

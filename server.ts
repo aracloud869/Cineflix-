@@ -54,7 +54,6 @@ async function axiosGetWithRetry(url: string, config: any = {}, retries = 5, del
 const subdlExtractCache = new SimpleMemoryCache<string>(7 * 24 * 60 * 60 * 1000); // 7 days ZIP extraction cache
 const subtitleProxyCache = new SimpleMemoryCache<string>(7 * 24 * 60 * 60 * 1000); // 7 days proxy download cache
 const searchResultsCache = new SimpleMemoryCache<any[]>(12 * 60 * 60 * 1000);   // 12 hours subtitle search results cache
-const imdbIdCache = new SimpleMemoryCache<string>(30 * 24 * 60 * 60 * 1000); // 30 days IMDb ID mapping cache
 
 const app = express();
 const PORT = 3000;
@@ -137,10 +136,6 @@ async function resolveImdbIdFromTmdb(title: string, type: 'movie' | 'series' = '
 async function getImdbId(idOrTitle: string, type: 'movie' | 'series' = 'movie'): Promise<string | null> {
   if (!idOrTitle) return null;
   
-  const cacheKey = `imdb_${idOrTitle}_${type}`;
-  const cached = imdbIdCache.get(cacheKey);
-  if (cached) return cached;
-  
   let cleanId = idOrTitle.trim();
   if (cleanId.includes(':')) {
     const parts = cleanId.split(':');
@@ -160,11 +155,7 @@ async function getImdbId(idOrTitle: string, type: 'movie' | 'series' = 'movie'):
   }
   titleQuery = titleQuery.replace(/-/g, ' ').trim();
 
-  const resolved = await resolveImdbIdFromTmdb(titleQuery, type);
-  if (resolved) {
-    imdbIdCache.set(cacheKey, resolved);
-  }
-  return resolved;
+  return await resolveImdbIdFromTmdb(titleQuery, type);
 }
 
 // SubDL API integration - Search
@@ -240,20 +231,14 @@ app.get("/api/subdl/extract", async (req, res) => {
   }
 
   try {
-    // Construct full download URL
-    let downloadUrl = url;
-    if (!url.startsWith('http')) {
-      downloadUrl = `https://dl.subdl.com${url.startsWith('/') ? '' : '/'}${url}`;
-    }
-
-    console.log(`[SubDL Extract] Downloading ZIP from: ${downloadUrl}`);
+    const downloadUrl = `https://dl.subdl.com${url}`;
 
     // Download ZIP
     const zipResponse = await axiosGetWithRetry(downloadUrl, {
       responseType: 'arraybuffer',
       timeout: 20000,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0'
       }
     });
 
@@ -272,47 +257,18 @@ app.get("/api/subdl/extract", async (req, res) => {
       vttEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.vtt'));
     }
     
-    // Final fallback: just take the largest file in the ZIP that isn't a directory
     if (!srtEntry && !vttEntry) {
-      const candidates = zipEntries.filter(e => !e.isDirectory && e.header.size > 100);
-      if (candidates.length > 0) {
-        // Sort by size and take the largest (subtitles are usually 50KB-200KB)
-        const largest = candidates.sort((a, b) => b.header.size - a.header.size)[0];
-        if (largest.entryName.toLowerCase().endsWith('.srt')) srtEntry = largest;
-        else vttEntry = largest;
-      }
-    }
-    
-    if (!srtEntry && !vttEntry) {
-       return res.status(404).json({ error: "No subtitle file found in ZIP archive" });
+       return res.status(404).json({ error: "No SRT or VTT file found in ZIP archive" });
     }
 
     let vttContent = "";
     if (vttEntry) {
-      const buffer = vttEntry.getData();
-      // Try to detect encoding or at least handle BOM
-      vttContent = buffer.toString('utf8');
-      if (vttContent.charCodeAt(0) === 0xFEFF) {
-        vttContent = vttContent.slice(1);
-      }
-      
+      vttContent = vttEntry.getData().toString('utf8');
       if (!vttContent.trim().startsWith('WEBVTT')) {
         vttContent = 'WEBVTT\n\n' + vttContent;
       }
     } else if (srtEntry) {
-      const buffer = srtEntry.getData();
-      let srtContent = buffer.toString('utf8');
-      
-      // Handle BOM
-      if (srtContent.charCodeAt(0) === 0xFEFF) {
-        srtContent = srtContent.slice(1);
-      }
-      
-      // If it looks garbled (contains null bytes or non-printable chars at start), try latin1
-      if (srtContent.includes('\u0000') || (srtContent.length > 0 && srtContent.charCodeAt(0) > 65533)) {
-        srtContent = buffer.toString('latin1');
-      }
-      
+      const srtContent = srtEntry.getData().toString('utf8');
       vttContent = srtToVtt(srtContent);
     }
 
@@ -476,20 +432,10 @@ function srtToVtt(srt: string): string {
 
   // Convert SRT to VTT
   // 1. Convert timestamp format: 00:00:00,000 -> 00:00:00.000
-  // Supporting single/double-digit hours and comma/dot milliseconds
-  text = text.replace(/(\d{1,2}:\d{2}:\d{2})[,.](\d{1,3})/g, (match, hms, ms) => {
-    // Ensure hours are 2 digits
-    let [h, m, s] = hms.split(':');
-    h = h.padStart(2, '0');
-    // Ensure milliseconds are 3 digits
-    ms = ms.padEnd(3, '0');
-    return `${h}:${m}:${s}.${ms}`;
-  });
+  text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
   
-  // 2. Add WEBVTT header if not present
-  if (!text.trim().startsWith('WEBVTT')) {
-    text = 'WEBVTT\n\n' + text;
-  }
+  // 2. Add WEBVTT header
+  text = 'WEBVTT\n\n' + text;
   
   return text;
 }
@@ -542,7 +488,6 @@ app.get("/api/subtitles", async (req, res) => {
     const cachedSearch = searchResultsCache.get(cacheKey);
     if (cachedSearch) {
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache search results for 1 hour in browser
       return res.json({ subtitles: cachedSearch });
     }
 
@@ -564,24 +509,38 @@ app.get("/api/subtitles", async (req, res) => {
     let resolvedImdbId = (imdb_id && typeof imdb_id === 'string' && imdb_id.startsWith('tt')) ? imdb_id : null;
     
     if (!resolvedImdbId) {
-      // Parallel resolution attempt for extreme speed
-      const searchTasks = [];
-      
+      // 1. Try resolving using originName (usually English name, e.g. "Battle Through the Heavens")
       if (originName) {
         const cleaned = cleanSearchTitle(String(originName));
-        if (cleaned) searchTasks.push(getImdbId(cleaned, type === 'series' ? 'series' : 'movie'));
-      }
-      if (title) {
-        const cleaned = cleanSearchTitle(String(title));
-        if (cleaned) searchTasks.push(getImdbId(cleaned, type === 'series' ? 'series' : 'movie'));
-      }
-      if (queryId) {
-        const cleaned = cleanSearchTitle(queryId);
-        if (cleaned) searchTasks.push(getImdbId(cleaned, type === 'series' ? 'series' : 'movie'));
+        if (cleaned) {
+          const resolved = await getImdbId(cleaned, type === 'series' ? 'series' : 'movie');
+          if (resolved && resolved.startsWith('tt')) {
+            resolvedImdbId = resolved;
+          }
+        }
       }
 
-      const results = await Promise.all(searchTasks);
-      resolvedImdbId = results.find(r => r && r.startsWith('tt')) || null;
+      // 2. Try resolving using Vietnamese accented title (e.g. "Đấu Phá Thương Khung")
+      if (!resolvedImdbId && title) {
+        const cleaned = cleanSearchTitle(String(title));
+        if (cleaned) {
+          const resolved = await getImdbId(cleaned, type === 'series' ? 'series' : 'movie');
+          if (resolved && resolved.startsWith('tt')) {
+            resolvedImdbId = resolved;
+          }
+        }
+      }
+
+      // 3. Fallback to using queryId slug (e.g. "dau-pha-thuong-khung")
+      if (!resolvedImdbId && queryId) {
+        const cleaned = cleanSearchTitle(queryId);
+        if (cleaned) {
+          const resolved = await getImdbId(cleaned, type === 'series' ? 'series' : 'movie');
+          if (resolved && resolved.startsWith('tt')) {
+            resolvedImdbId = resolved;
+          }
+        }
+      }
     }
 
     if (resolvedImdbId) {
@@ -608,17 +567,8 @@ app.get("/api/subtitles", async (req, res) => {
           if (response.data && Array.isArray(response.data.subtitles)) {
             response.data.subtitles.forEach((sub: any) => {
               const norm = normalizeLanguageLabel(sub.lang || sub.language, 'AIO Subtitle');
-              
-              let finalUrl = sub.url;
-              if (finalUrl && (finalUrl.includes('subdl.com') || finalUrl.toLowerCase().endsWith('.zip'))) {
-                const pathPart = finalUrl.includes('subdl.com') ? finalUrl.split('subdl.com')[1] : finalUrl;
-                // Just use the normal proxy, we will handle ZIP in the proxy
-                finalUrl = `/api/subtitles/proxy?url=${encodeURIComponent(finalUrl.startsWith('http') ? finalUrl : 'https://dl.subdl.com' + (finalUrl.startsWith('/') ? '' : '/') + finalUrl)}`;
-              }
-
               list.push({
                 ...sub,
-                url: finalUrl,
                 addon: 'AIO Subtitle',
                 id: sub.id || sub.url,
                 lang: norm.langCode,
@@ -649,16 +599,8 @@ app.get("/api/subtitles", async (req, res) => {
           if (response.data && Array.isArray(response.data.subtitles)) {
             response.data.subtitles.forEach((sub: any) => {
               const norm = normalizeLanguageLabel(sub.lang || sub.language, 'SubDL Addon');
-              
-              // Use normal proxy
-              let finalUrl = sub.url;
-              if (finalUrl && (finalUrl.includes('subdl.com') || finalUrl.toLowerCase().endsWith('.zip'))) {
-                finalUrl = `/api/subtitles/proxy?url=${encodeURIComponent(finalUrl.startsWith('http') ? finalUrl : 'https://dl.subdl.com' + (finalUrl.startsWith('/') ? '' : '/') + finalUrl)}`;
-              }
-
               list.push({
                 ...sub,
-                url: finalUrl,
                 addon: 'SubDL Addon',
                 id: sub.id || sub.url,
                 lang: norm.langCode,
@@ -860,7 +802,6 @@ app.get("/api/subtitles/proxy", async (req, res) => {
     if (cachedContent) {
       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
       return res.send(cachedContent);
     }
 
@@ -880,56 +821,19 @@ app.get("/api/subtitles/proxy", async (req, res) => {
       }
     });
 
-    let vttContent = "";
-    const contentType = response.headers['content-type'] || '';
-    const isZip = contentType.includes('zip') || subtitleUrl.toLowerCase().split('?')[0].endsWith('.zip');
-
-    if (isZip) {
-      // Handle ZIP extraction transparently in the proxy
-      const zip = new AdmZip(Buffer.from(response.data));
-      const zipEntries = zip.getEntries();
-      
-      let srtEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.srt') && (entry.entryName.toLowerCase().includes('viet') || entry.entryName.toLowerCase().includes('vi.')));
-      if (!srtEntry) srtEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.srt'));
-      
-      let vttEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.vtt') && (entry.entryName.toLowerCase().includes('viet') || entry.entryName.toLowerCase().includes('vi.')));
-      if (!vttEntry) vttEntry = zipEntries.find(entry => !entry.isDirectory && entry.entryName.toLowerCase().endsWith('.vtt'));
-      
-      if (!srtEntry && !vttEntry) {
-        // Fallback: largest non-directory file
-        const candidates = zipEntries.filter(e => !e.isDirectory && e.header.size > 100);
-        if (candidates.length > 0) {
-          const largest = candidates.sort((a, b) => b.header.size - a.header.size)[0];
-          if (largest.entryName.toLowerCase().endsWith('.srt')) srtEntry = largest;
-          else vttEntry = largest;
-        }
-      }
-
-      if (vttEntry) {
-        vttContent = vttEntry.getData().toString('utf8');
-      } else if (srtEntry) {
-        const buffer = srtEntry.getData();
-        let srtContent = buffer.toString('utf8');
-        if (srtContent.charCodeAt(0) === 0xFEFF) srtContent = srtContent.slice(1);
-        if (srtContent.includes('\u0000')) srtContent = buffer.toString('latin1');
-        vttContent = srtToVtt(srtContent);
-      } else {
-        throw new Error("No subtitle found in ZIP archive");
-      }
-    } else {
-      // Handle direct file
-      let rawData = Buffer.from(response.data).toString('utf8');
-      if (rawData.includes('\u0000')) rawData = Buffer.from(response.data).toString('latin1');
-      
-      if (rawData.trim().startsWith('WEBVTT') || subtitleUrl.toLowerCase().includes('.vtt')) {
-        vttContent = rawData;
-      } else {
-        vttContent = srtToVtt(rawData);
-      }
+    // Try to decode as UTF-8
+    let rawData = Buffer.from(response.data).toString('utf8');
+    
+    // Check if it looks garbled (contains null bytes or weird sequences)
+    if (rawData.includes('\u0000')) {
+       // Fallback to a safer string conversion if it looks like binary or weird encoding
+       rawData = Buffer.from(response.data).toString('latin1');
     }
 
-    if (!vttContent.trim().startsWith('WEBVTT')) {
-      vttContent = 'WEBVTT\n\n' + vttContent;
+    // Check if it's already VTT or if it's SRT
+    let vttContent = rawData;
+    if (!rawData.trim().startsWith('WEBVTT')) {
+      vttContent = srtToVtt(rawData);
     }
 
     // Save in cache
@@ -937,7 +841,6 @@ app.get("/api/subtitles/proxy", async (req, res) => {
 
     res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
     res.send(vttContent);
   } catch (error: any) {
     const status = error.response ? error.response.status : 500;
@@ -1070,22 +973,16 @@ app.get("/api/m3u8-proxy", async (req, res) => {
 
   try {
     const isM3u8 = targetUrl.toLowerCase().split('?')[0].endsWith('.m3u8') || targetUrl.includes('m3u8');
-    
-    // Determine the best Referer based on the target domain
-    let referer = 'https://phim.nguonc.com';
-    if (targetUrl.includes('opstream') || targetUrl.includes('vip.opstream')) {
-      referer = 'https://opstream.com/';
-    }
 
     if (isM3u8) {
-      const response = await axiosGetWithRetry(targetUrl, {
+      const response = await axios.get(targetUrl, {
         responseType: 'text',
         headers: {
-          'Referer': referer,
-          'Origin': new URL(targetUrl).origin,
+          'Referer': 'https://phim.nguonc.com',
+          'Origin': 'https://phim.nguonc.com',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
-        timeout: 12000
+        timeout: 10000
       });
 
       const playlistText = response.data;
@@ -1118,11 +1015,11 @@ app.get("/api/m3u8-proxy", async (req, res) => {
       return res.send(rewrittenLines.join('\n'));
     } else {
       // Binary stream for TS segment or encryption key
-      const response = await axiosGetWithRetry(targetUrl, {
+      const response = await axios.get(targetUrl, {
         responseType: 'stream',
         headers: {
-          'Referer': referer,
-          'Origin': new URL(targetUrl).origin,
+          'Referer': 'https://phim.nguonc.com',
+          'Origin': 'https://phim.nguonc.com',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         },
         timeout: 15000
@@ -1138,9 +1035,8 @@ app.get("/api/m3u8-proxy", async (req, res) => {
       response.data.pipe(res);
     }
   } catch (error: any) {
-    const status = error.response ? error.response.status : 500;
-    console.error(`[m3u8 Proxy Error] status: ${status}, url: ${targetUrl}, msg: ${error.message}`);
-    res.status(status).send(`Failed to proxy media segment: ${error.message}`);
+    console.error(`[m3u8 Proxy Error] url: ${targetUrl}, msg: ${error.message}`);
+    res.status(500).send(`Failed to proxy media segment: ${error.message}`);
   }
 });
 
